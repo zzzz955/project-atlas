@@ -1,0 +1,37 @@
+# Build
+build/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+
+# vcpkg
+vcpkg_installed/
+vcpkg/
+
+# Compiler / IDE
+*.obj
+*.o
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.pdb
+*.ilk
+.vs/
+.vscode/
+.idea/
+*.user
+
+# Secrets — only *.example is committed
+.env
+.env.*
+!.env.*.example
+
+# Runtime output
+logs/
+*.log
+packet_dump/
+
+# Local agent settings
+.claude/settings.local.json
