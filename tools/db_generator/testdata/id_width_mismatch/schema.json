@@ -1,0 +1,14 @@
+{
+  "_comment": "🔴 테스트 픽스처다. 실제 스키마가 아니며 server/db/ 밖에 있으므로 `npm run gen:db` 는 이 파일을 보지 않는다. character_id 를 uint32 로 선언해 db_generator 가 강타입 ID 폭 불일치를 거부하는지 검사한다(cpp-style.md §4.3 · server/generated/db/tests/CMakeLists.txt).",
+  "database": "atlas_fixture",
+  "tables": [
+    {
+      "name": "characters",
+      "comment": "픽스처 — character_id 가 CharacterId(UInt64)보다 좁다.",
+      "columns": [
+        { "name": "server_id",    "type": "uint16", "pk": true, "null": false },
+        { "name": "character_id", "type": "uint32", "pk": true, "null": false }
+      ]
+    }
+  ]
+}

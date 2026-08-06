@@ -1,0 +1,50 @@
+# tools/ — 데이터 파이프라인 (Node)
+
+게임을 갈아끼우는 **seam**이다(`docs/design/architecture-design.md §14`). 코어 C++ 는 고정이고,
+게임별로 바뀌는 계약 · 스키마 · 정적 데이터는 전부 여기서 **생성**된다.
+
+## 입력 → 출력
+
+| 생성기 | 입력 | 출력 | 상태 |
+|---|---|---|---|
+| `pkt_generator` | `shared/contracts/**/*.cs` | `server/generated/pkt/` (C++ 패킷 · DTO · 필드별 write/read) | 구현 완료 (2026-08-06, wp6). 상세는 `pkt_generator/AGENTS.md` |
+| `db_generator` | `server/db/schema.json` | `server/generated/db/` (POD row 구조체 · `ColumnMeta` 배열 · `?` placeholder SQL 상수 · 바인딩 순서 배열) + `server/generated/db/schema.sql` | 구현 완료 (2026-08-06, wp7). 🔴 **CRUD 실행 API는 생성하지 않는다** — 커넥션 · 트랜잭션 · per-character lock 은 ORM 런타임 노드 몫(`design §10.1`). 상세는 `db_generator/AGENTS.md` |
+| `info_generator` | `shared/datas/**/*.csv` (5행: 필드명 / 타깃 `C`\|`S`\|`CS` / 타입 / 제약 / 데이터) | 정적 데이터 테이블 | **이번 슬라이스 밖** — 데모 게임 CSV(`design §3.3`)가 아직 없다. `npm run gen:info*` 스크립트도 없다. 입력 디렉터리(`shared/datas/`)와 `template.ini [data-gen]` 경로만 미리 잡아 뒀다 |
+
+공통 기반은 이 디렉터리에 있다.
+
+| 파일 | 역할 |
+|---|---|
+| `config-loader.js` | `template.ini` + `types.json` 로드 → `paths` / `dataGen` / `dbGen` / `pktGen` / `types`. 파싱 실패 시 `[config] ERROR:` 출력 후 exit 1 |
+| `types.json` | **정규화 타입 → 엔진 타입 매핑의 SoT.** `cpp` · `mysql` · `csharp` · `gdscript` 4열 |
+| `all_generator.bat` | 일괄 실행 배치. 순서 `db → pkt`, 단계 실패 시 중단, `tools/logs/` 에 타임스탬프 로그. `GEN_BATCH_NO_PAUSE=1` 이면 종료 대기 없음 |
+
+## 실행
+
+레포 **루트**에서 실행한다(`config-loader` 가 루트 기준으로 `template.ini` 를 찾는다).
+
+```
+npm run gen:all      # db → pkt 전체 재생성
+npm run gen:db       # 개별
+npm run gen:pkt
+npm run gen:check    # 드리프트 게이트 — 생성물이 입력과 어긋나면 exit 1
+```
+`tools\all_generator.bat` 은 `gen:all` 과 같은 순서를 배치로 돌리며 로그 파일을 남긴다.
+🔴 `gen:*` 스크립트는 **이 레포가 실제로 만드는 생성기**만 가리킨다. 아무도 쓰지 않을 생성기를 가리키는
+스크립트를 남겨 두면 `gen:check` 가 영구히 exit 1 이 되어 드리프트 게이트가 무의미해진다.
+현재 `gen:check` 는 exit 0 이다(db 6개 · pkt 10개, `changed=0`). 위험한 것은 **영원히 초록불이 될 수
+없는** 조성 — 존재하지 않는 생성기를 가리키는 스크립트다.
+
+## 🔴 규칙
+
+- **생성 출력을 직접 편집하지 않는다.** `server/generated/**` 는 전부 생성물이다. 고칠 것이 있으면
+  입력(`shared/contracts` · `server/db/schema.json` · `shared/datas`)이나 생성기를 고치고 다시 돌린다.
+  수동 편집은 다음 `gen:all` 에서 조용히 사라지고, `gen:check` 가 CI 에서 잡는다.
+- **타입은 `types.json` 의 정규화 타입만 쓴다.** 새 타입이 필요하면 `types.json` 에 4열을 모두 채워
+  추가한다. `cpp` 열이 비면 `config-loader` 가 로드를 거부한다.
+- 🔴 **`cpp` 열에 `int` / `long` 을 쓰지 않는다** — `cpp-style.md §4.1`. 고정폭 별칭(`Int32`, `UInt64`,
+  `Float32`)만 쓴다. Windows LLP64 / Linux LP64 차이로 직렬화 결과가 갈린다.
+- 🔴 **`template.ini` 에 시크릿을 넣지 않는다.** 경로 · 타깃 · 네임스페이스만 둔다. 접속 정보 · 키는
+  `.env` 이며 커밋되는 것은 `*.example` 뿐이다.
+- `bool` 의 **직렬화 폭**은 이 매핑이 정하지 않는다 — `pkt_generator` 의 emitter 책임이다
+  (`cpp-style.md §4.4` enum/폭 규칙).

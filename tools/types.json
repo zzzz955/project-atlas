@@ -1,0 +1,15 @@
+{
+  "_comment": "정규화 타입 → 엔진 타입 매핑. SoT. cpp=서버 C++(cpp-style.md §4.2 A안 별칭, int/long 금지), mysql=DB, csharp=계약 소스(shared/contracts/**/*.cs), gdscript=클라(후속 슬라이스). string(N)/datetime/json은 매핑 표에 없고 생성기가 특수 처리한다.",
+  "int8":   { "cpp": "Int8",        "gdscript": "int",    "csharp": "sbyte",  "mysql": "TINYINT" },
+  "int16":  { "cpp": "Int16",       "gdscript": "int",    "csharp": "short",  "mysql": "SMALLINT" },
+  "int32":  { "cpp": "Int32",       "gdscript": "int",    "csharp": "int",    "mysql": "INT" },
+  "int64":  { "cpp": "Int64",       "gdscript": "int",    "csharp": "long",   "mysql": "BIGINT" },
+  "uint8":  { "cpp": "UInt8",       "gdscript": "int",    "csharp": "byte",   "mysql": "TINYINT UNSIGNED" },
+  "uint16": { "cpp": "UInt16",      "gdscript": "int",    "csharp": "ushort", "mysql": "SMALLINT UNSIGNED" },
+  "uint32": { "cpp": "UInt32",      "gdscript": "int",    "csharp": "uint",   "mysql": "INT UNSIGNED" },
+  "uint64": { "cpp": "UInt64",      "gdscript": "int",    "csharp": "ulong",  "mysql": "BIGINT UNSIGNED" },
+  "float":  { "cpp": "Float32",     "gdscript": "float",  "csharp": "float",  "mysql": "FLOAT" },
+  "double": { "cpp": "Float64",     "gdscript": "float",  "csharp": "double", "mysql": "DOUBLE" },
+  "bool":   { "cpp": "bool",        "gdscript": "bool",   "csharp": "bool",   "mysql": "TINYINT(1)" },
+  "string": { "cpp": "std::string", "gdscript": "String", "csharp": "string", "mysql": "VARCHAR(255)" }
+}
