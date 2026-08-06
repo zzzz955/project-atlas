@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan Work"
+  short_description: "Decompose a confirmed design into a dependency DAG"
+  default_prompt: "Use $plan-work to decompose a confirmed design into work nodes."
