@@ -86,9 +86,33 @@ server/character selection = GAME.
   updated in the same change.
 
 ## Build
-CMake (SoT) + PCH + unity build (optional) + vcpkg manifest (pinned baseline) + multi-stage Docker.
-CI gate: `format-check → clang-tidy → build(unity ON) → build(unity OFF) → test`.
+CMake root is `server/` (also the include root — `#include "atlas/core/types.h"`). Ninja generator
+only: the VS generator emits no `compile_commands.json` and clang-tidy needs it. vcpkg manifest
+(`server/vcpkg.json`, 6 deps, `builtin-baseline` pinned by `setup.bat`) + PCH + unity build.
+
+| command | what |
+|---|---|
+| `server\setup.bat` | one-point installer — VS toolset → vcpkg clone/bootstrap → pin baseline → `npm ci` → configure. Idempotent. First run 20-60 min |
+| `cmake --build --preset windows-debug` | unity ON — dev loop (run from `server/`) |
+| `cmake --build --preset windows-ci` | unity OFF — missing-include / ODR gate |
+| `ctest --preset windows-ci --output-on-failure` | tests (GoogleTest via `gtest_discover_tests`) |
+| `powershell -NoProfile -File server\scripts\ci-gate.ps1` | **the full gate.** `-WhatIf` prints the plan |
+
+Configure before building a fresh tree: `cmake --preset windows-debug` / `cmake --preset windows-ci`
+(run from `server/`; `setup.bat` already does the `windows-debug` one).
+Presets: `windows-debug` · `windows-ci` · `linux-release` · `linux-ci` (`{win,linux}-ci` = unity OFF).
+CI gate order: `gen:check → format-check → clang-tidy → build(unity ON) → build(unity OFF) → test`
+(`ci-gate.ps1` inserts `configure` as prep between steps 1 and 2 — clang-tidy needs the Ninja tree's
+`compile_commands.json`, so it prints 7 numbered steps).
 🔴 The **non-unity** build is the gate that catches missing includes and ODR collisions — never skip it.
+🔴 `gen:check` leads the gate: it is the mechanical enforcement of "never edit generated output".
+🔴 **`clang-tidy` is CI-only (Linux/clang); `ci-gate.ps1` skips it and says so.** clang-tidy cannot
+read the MSVC PCH the local Ninja/cl tree emits (`cmake_pch.cxx.pch` is a `/Yc` binary, not clang
+AST). Suppressing the PCH just to satisfy the linter would tidy a TU the compiler never builds, so
+the step moved to `linux-ci` instead. Undo when clang-cl lands locally. `AD §15.4` · `CS §7.3`.
+cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them via
+`Common7\Tools\VsDevCmd.bat -arch=amd64` (both `setup.bat` and `ci-gate.ps1` do this themselves).
+No git remote yet → `ci-gate.ps1` is the real gate; `.github/workflows/ci.yml` is unverified.
 
 ## Context budget
 Tool results are next-turn input tokens — the dominant cost. Bound output **at the source**, never by
@@ -114,6 +138,16 @@ dumping and skimming.
 | `.claude/hooks/bulk-output-guard/` | `PreToolUse(Bash\|PowerShell)` — denies unbounded recursive listings, whole-file `cat`, shell content search, and unbounded `git log`; points at the bounded tool. Enforces "Context budget" above. `git diff` exempt. Disable: `ATLAS_BULK_OUTPUT_GUARD_DISABLE=1` |
 | `.claude/settings.json` | hook registration. `settings.local.json` is gitignored |
 | `.agents/skills/*/` | Codex bridge stubs — 5-line pointers at the `.claude/skills/*` originals + `agents/openai.yaml` display metadata. **Never fork the workflow here**; edit the `.claude` file |
+| `tools/` | **Node data-pipeline = the templatization seam** (`AD §14`). `config-loader.js` + `types.json` (normalized-type SoT, `cpp` column = the C++ seam) + `all_generator.bat`, and the generators `{pkt,db}_generator/` (`info_generator` lands with the demo-game CSVs in a later slice). Driven from the repo root by `npm run gen:*`. See `tools/AGENTS.md` |
+| `template.ini` · `package.json` | generator paths / targets / namespaces (🔴 never secrets), and the `gen:all` · `gen:check` script contract. 🔴 Only wire a `gen:*` script for a generator this repo **actually ships or has planned work to create** — a script pointing at one nobody will write pins `gen:check` at exit 1 forever and kills the drift gate |
+
+**Repo layout**
+```
+server/    C++ framework + CMake root + setup.bat + db/schema.json + generated/{pkt,db}
+shared/    contracts/ (*.cs → pkt input) · datas/ (*.csv → info input)
+tools/     2 generators (Node: pkt, db) + config-loader.js + types.json
+docs/  template.ini  package.json          (client/ is a later slice)
+```
 
 DAG artifacts live in `.wp/<slot>/` and are gitignored (`work_plan.md`, `work_prompt*`).
 

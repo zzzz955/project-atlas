@@ -26,7 +26,15 @@ vcpkg/
 # Secrets — only *.example is committed
 .env
 .env.*
+!.env.example
 !.env.*.example
+
+# Node tooling
+node_modules/
+
+# Generator runtime output
+tools/logs/
+tools/.gen-cache/
 
 # Runtime output
 logs/

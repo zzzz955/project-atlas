@@ -223,6 +223,26 @@ AoI 그리드는 **Actor 단위**로 동작한다. 따라서 브로드캐스트 
 - **패킷 구조체에 `#pragma pack` 금지.** 패딩·정렬이 컴파일러/플랫폼마다 다르다. `pkt_generator`가 **필드별 write/read를 생성**한다.
 - **부동소수점을 프로토콜에 싣지 않는다.** 양자화된 정수만.
 
+#### DTO 와이어 포맷 확정 (2026-08-06, wp6)
+
+`pkt_generator` 의 C++ 타깃이 실제로 방출하는 값이다. 🔴 이 표가 SoT이고 생성 코드 상단 주석에
+같은 내용이 박힌다 — 한쪽만 고치면 안 된다(`tools/pkt_generator/pkt_generator.js` 의
+`LENGTH_PREFIX_CPP` 한 곳에서 폭이 나온다).
+
+| 항목 | 확정값 | 근거 |
+|---|---|---|
+| **길이 프리픽스** | `UInt16` LE, 모든 가변 길이 필드 앞에 붙는다. 문자열은 **바이트 수**, 배열은 **원소 수**. 상한 65535, 초과 시 쓰기에서 **클램프** | 폭이 고정이어야 프레임이 나중에 붙어도 재해석이 필요 없다. 조용히 잘린 스트림보다 클램프가 낫다 — 호출자가 크기를 스스로 제한해야 한다 |
+| **문자열 인코딩** | **UTF-8**. 종료 문자 없음, BOM 없음. 프리픽스는 코드포인트가 아니라 바이트를 센다 | 계약(C#)·클라(GDScript)·서버(C++) 3타깃이 공통으로 쓰는 유일한 인코딩 |
+| **bool** | 정확히 1바이트, 쓰기는 0/1. 읽기는 0이 아닌 모든 값을 `true` 로 | `bool` 의 sizeof 는 구현 정의라 와이어 폭을 별도로 못 박아야 한다 |
+| **enum** | 계약에 선언된 기반 타입 폭 그대로(`: byte` → 1바이트). 열거자 값은 생성 코드에 **명시적으로** 박는다 | 멤버를 중간에 끼워 넣었을 때 뒤쪽 와이어 값이 조용히 밀리면 안 된다 |
+| **읽기 실패** | `bool Read(std::span<const Byte>&)` 의 `false`. 🔴 throw 하지 않는다(`§11.2a`). 실패 시 커서와 대상 DTO를 건드리지 않는다 | 잘린 패킷은 예외 상황이 아니라 정상적인 입력이다 |
+| **길이 검증 순서** | 모든 부호 없는 뺄셈 **전에** 남은 크기를 검사. 배열/문자열은 선언된 길이를 **할당 전에** 남은 버퍼와 대조하고 `reserve()` 하지 않는다 | 프리픽스는 공격자가 정한다 — 거짓말하는 프리픽스가 거대 할당이 아니라 버퍼 부족으로 죽어야 한다 |
+| **중첩 컬렉션** | 🔴 미지원. 생성기가 거부하고 SoA(배열들의 구조체)로 펴라고 안내한다 | `§8.4` 델타 압축이 원하는 배치와 같다 |
+
+🔴 **이 노드가 만들지 않는 것: 프레임 헤더 · opcode 테이블 · 시퀀스 · 체크섬 · HMAC.** `§8.1` 의
+프레임 필드 폭과 `§16` 의 HMAC/AEAD 가 미결인 채로 헤더를 지어내면 계약이 확정될 때 생성기와
+생성물을 둘 다 재작업하게 된다. 지금 생성되는 것은 **DTO 뿐**이며, 프레임은 코어의 몫이다.
+
 ---
 
 ## 9. 스레드 모델
@@ -239,6 +259,30 @@ I/O 스레드 풀 (asio io_context)
                 │
                 └─→ 완료 시 원래 strand로 post
 ```
+
+#### 구현 확정 (2026-08-06, wp5)
+
+설계에 값이 없던 3가지를 코드가 정했다. `server/atlas/net/{io_runner,session,acceptor}.{h,cpp}`.
+
+- **워커 스레드 수 기본값 = `std::thread::hardware_concurrency()`.** 그것이 0을 답하는 플랫폼에서는
+  1로 폴백한다(워커 1개도 동작하는 서버다). `IoRunner(worker_count)` 인자로 덮어쓸 수 있고,
+  개수는 생성 시점에 고정된다 — 풀은 리사이즈하지 않는다.
+- 🔴 **graceful shutdown 순서 = `acceptor.Stop()` → 살아있는 세션 `Close()` → `runner.Stop()`.**
+  `runner.Stop()`은 work_guard를 놓아 큐가 비면 `run()`이 돌아오게 할 뿐이므로, **읽기가 걸려 있는
+  소켓 하나가 풀 전체를 붙잡는다.** 앞문을 먼저 닫는 것이 drain을 유한하게 만드는 조건이다.
+  `~IoRunner()`는 이 순서를 지키지 않은 호출자용 **안전망**으로 `io_context::stop()`(큐 폐기) 후
+  join한다 — 의도된 경로가 아니며 Stop()과 의미가 반대다.
+- **쓰기 큐 정책 = 세션 strand 위의 FIFO `deque<vector<Byte>>`, `async_write` 1개만 in-flight,**
+  완료 핸들러가 다음 항목을 시작한다. 페이로드는 `Send()` 시점에 복사한다(호출자가 임시 버퍼를
+  넘길 수 있다). 🔴 **상한은 두지 않았다** — 백프레셔 상한은 "메시지 1건"이 정의돼야 의미가 있고,
+  메시지는 프레임 계층(§8)이 생기기 전까지 존재하지 않는다. 그 슬라이스에서 함께 정한다.
+- 🔴 **`IoRunner` 워커는 `io_context::run()`을 try/catch로 감싸지 않는다.** 모든 핸들러 진입점이
+  이미 `Guarded`를 통과하므로(§11.2b), 여기까지 예외가 올라온다는 것은 **가드가 빠진 핸들러가
+  있다는 뜻**이다. 여기서 잡아 워커를 재시작하면 가드가 막으려던 결함을 정확히 그 형태로 숨긴다.
+  프로세스를 죽게 두는 쪽이 누락을 시끄럽게 만든다.
+- 🔴 **세션 계층에 락은 0개다.** 세션의 모든 멤버는 자기 `Strand`에 bind된 핸들러에서만 만진다.
+  회귀 방지선은 `net_session_test.cpp`의 재진입 카운터 테스트(최대값 == 1)와
+  `rg "std::mutex|std::lock_guard|std::unique_lock" server/atlas/net/` → 0 이다.
 
 ### 9.1 동시성 단일 모델 — strand
 
@@ -275,6 +319,19 @@ I/O 스레드 풀 (asio io_context)
 
 🔴 **트랜잭션 RAII와 예외 가드는 한 세트다.** `Guarded` 안에서 예외가 나면 트랜잭션이 자동 롤백돼야 "원자성 보장"이 성립한다.
 
+### 10.1 슬라이스 경계 — 생성물 먼저, 실행 API는 ORM 런타임 노드 (2026-08-06 확정)
+
+위 "포함" 목록은 **생성물 + 런타임 두 부분**이고, 이번 슬라이스(`db_generator` C++ 타깃)는 **생성물까지만** 만든다.
+
+| | 내용 | 어디서 |
+|---|---|---|
+| 이번 슬라이스 | 테이블당 POD 행 구조체 · 컬럼 메타데이터(이름/타입/PK/null/길이) · **prepared statement 고정 문자열 상수**(`?` placeholder) · 파라미터 **바인딩 순서 배열** | `tools/db_generator/` → `server/generated/db/` |
+| **후속 — ORM 런타임 노드** | 커넥션 · 트랜잭션 스코프 RAII · per-character lock · 타입 세이프 실행 API(CRUD) | 아직 없음 |
+
+🔴 **런타임이 없는데 CRUD 실행 코드를 뽑으면 컴파일되지 않는다.** 그래서 순서가 이쪽이다 — 런타임 노드가 생기면 emitter를 확장해 CRUD 함수 시그니처까지 뽑고, 그 함수들이 이번에 뽑은 SQL 상수와 바인딩 배열을 그대로 쓴다. `?` 개수 == 바인딩 배열 길이는 생성 헤더의 `static_assert`가 강제한다.
+
+🔴 **라이브 DB 마이그레이션 diff는 이식하지 않았다.** 원본(`project-tower`)의 db_generator는 `INFORMATION_SCHEMA`를 읽어 `ALTER` 문을 만들고 실행까지 했지만, ① 아직 실 DB가 없고 ② 공개 레포에 접속 자격 증명이 얽히면 안 된다. 남은 것은 원본 `--generate-only` 상당의 **오프라인 `schema.sql` 출력**뿐이며, 적용은 수동이다. `template.ini [db-gen]`에 접속 키가 없는 것도 같은 이유다. (마이그레이션 **자동화**는 위 "금지" 목록에도 이미 들어 있다.)
+
 ---
 
 ## 11. 로깅 · 예외
@@ -292,9 +349,31 @@ ATLAS_LOG_TRACE / DEBUG / INFO / WARN / ERROR / FATAL
 - `std::source_location`으로 파일/라인/함수 자동 첨부
 - **ctx 원장 자동 주입** (trace id · session · character)
 - 🔴 **파일 쓰기가 I/O 스레드를 블로킹하면 안 된다** — 큐 → 전용 로그 스레드 → 파일
-- 롤링: 일자 + 크기 상한, 보존 N일
+- 롤링: 일자 + 보존 N일
 - 🔴 **크래시/시그널 시 강제 flush** — 없으면 사고 직전 로그가 통째로 날아가 장애 분석이 불가능해진다
 - 🔴 **패킷 로그는 별도 채널** — 용량이 자릿수로 크고 이진이라 텍스트 로그와 섞으면 둘 다 못 쓴다
+
+#### 구현 확정 (2026-08-06, wp4)
+
+- 🔴 **`log.h`는 spdlog를 include하지 않는다.** spdlog + fmt는 의존성 중 가장 무거운 헤더 집합인데
+  `log.h`는 사실상 모든 TU가 포함한다. spdlog 표면 전체를 `log.cpp`의 out-of-line `LogWrite` 뒤로
+  숨기고, 호출 지점 포맷팅은 `std::format`으로 한다 — 이것이 이 계층의 pimpl이다. CMake에서
+  `spdlog::spdlog`를 **`PRIVATE`로 링크**하는 것이 그 은닉의 기계적 강제다. `PUBLIC`으로 바꾸면
+  PCH·unity build로 번 시간을 그대로 반납한다.
+- **레벨 게이트는 헤더의 `inline std::atomic<UInt8>`.** 매크로가 포맷팅 전에 정수 비교 하나만 하고
+  빠져나오도록, 함수 로컬 static(매 호출 guard 검사)이 아니라 인라인 변수를 쓴다.
+- **보존 일수 N = 14일**(`LogConfig::retain_days` 기본값). spdlog `daily_file_sink`가 자정에 롤링하고
+  파일 개수 상한으로 보존을 처리한다.
+- ⚠️ **크기 상한은 MVP에서 넣지 않았다.** spdlog에는 일자와 크기를 함께 보는 싱크가 없고
+  (`daily_file_sink` = 일자+보존, `rotating_file_sink` = 크기+개수), 둘을 합치려면 보존 로직까지
+  직접 재구현해야 한다. 필요해지면 `base_sink` 파생 싱크 하나로 추가한다 — 포맷터/큐를 건드리는
+  일이 아니므로 §11.3의 "자체 구현 금지"에 걸리지 않는다.
+- **크래시 flush 훅 = `std::signal` + `std::set_terminate`.** `SIGABRT · SIGSEGV · SIGILL · SIGFPE ·
+  SIGINT · SIGTERM` 핸들러에서 flush → 기본 동작 복원 → 재발생(`std::raise`)시키므로 크래시 덤프와
+  종료 코드는 그대로 남는다. `std::set_terminate`는 이전 핸들러를 체이닝한다. `SIGKILL`은 정의상
+  잡을 수 없어 큐 꼬리를 잃는다 — 감수한다.
+- **`LogCount(level)`** — 레벨별 누적 레코드 수. `Guarded`가 예외를 삼킬 때 "ERROR 로그가 정확히 1건"
+  임을 테스트가 **관측**할 수 있게 하는 장치이고, 동시에 에러율 알람용 카운터다.
 
 ### 11.2 예외 정책
 
@@ -374,6 +453,25 @@ base64url 디코드 → JWK 파싱 → `EVP_PKEY` 변환 → RS256/ES256 서명 
 
 **게임 교체 = CSV / `schema.json` / contracts 교체 + 재생성.**
 
+경계가 말로만 있으면 지켜지지 않으므로 **경로를 고정한다.** 입력·출력 경로와 네임스페이스는
+`template.ini` 가 소유하고, 정규화 타입 → C++ 타입 매핑은 `tools/types.json` 의 `cpp` 열이 SoT다
+(값은 `cpp-style.md §4.2` A안 별칭 — 🔴 `int`/`long` 금지).
+
+| 생성기 | 입력 | C++ 출력 | ini 섹션 |
+|---|---|---|---|
+| `pkt_generator` | `shared/contracts/**/*.cs` | `server/generated/pkt/` | `[packet-gen]` |
+| `db_generator` | `server/db/schema.json` | `server/generated/db/` (+ `schema.sql`) | `[db-gen]` |
+| `info_generator` | `shared/datas/**/*.csv` | (데모 CSV 확정 후 — 생성기 자체가 아직 없다) | `[data-gen]` |
+
+생성 네임스페이스는 `atlas::generated` 하나로 고정한다. 실행은 레포 루트에서 `npm run gen:all`,
+드리프트 검사는 `npm run gen:check`(어긋나면 exit 1) — 🔴 **`server/generated/**` 는 전부 생성물이며
+직접 편집하지 않는다.**
+
+🔴 `gen:all` / `gen:check` 조성에는 **이 레포가 실제로 만드는 생성기만** 넣는다. 현재는 `db → pkt`
+2단계이며 `gen:info*` 스크립트는 없다 — 아무도 쓰지 않을 생성기를 가리키는 스크립트를 남기면
+`gen:check` 가 영구히 exit 1 이 되어 드리프트 게이트가 죽는다. `info_generator` 를 추가할 때 `package.json` 과 `tools/all_generator.bat`
+양쪽에 `info` 단계를 **맨 앞에** 넣는다(입력 데이터가 스키마·패킷보다 앞선다).
+
 이 방식의 이점은 **추측 기반 추상화를 만들지 않아도 된다**는 것이다(과설계의 주원인). generator 패턴은 자매 게임 3종에서 이미 검증됐다.
 
 🔴 **정직한 한계**: 프레임워크는 **2개 이상의 게임에 붙여봐야 검증된다.** 1개만 만들고 "템플릿"이라 부르면 실제로는 잘못 그은 경계가 다수 남는다. **Phase 2에서 기존 게임 1종을 이 프레임워크로 이식하는 것**이 진짜 검증이며, 그때 비로소 "템플릿"이 주장이 아니라 사실이 된다.
@@ -409,20 +507,35 @@ CI 게이트     : CMAKE_UNITY_BUILD=OFF  (누락 include · ODR 검출)
 ```
 🔴 이 게이트가 없으면 대가 4번은 반드시 터진다.
 
-**PCH 병용** — Boost.asio는 헤더가 무거워 PCH의 효율이 크다:
+**PCH 병용** — Boost.asio는 헤더가 무거워 PCH의 효율이 크다. 🔴 다만 **asio PCH는 `atlas_core`가 아니라 `atlas_net`에 붙는다** (실측 wp5): 코어는 asio에 의존하지 않는 것이 `types.h`를 싸게 유지하는 조건이고(`cpp-style.md §4.2`), asio를 코어 PCH에 넣으면 코어를 링크하는 모든 타깃이 asio를 파싱하게 되어 그 규칙이 무의미해진다.
 ```cmake
-target_precompile_headers(atlas_core PRIVATE <boost/asio.hpp> <string> <vector> <memory>)
+target_precompile_headers(atlas_core PRIVATE <string> <vector> <memory>)
+target_precompile_headers(atlas_net  PRIVATE <boost/asio.hpp>)
 ```
 안정적인 외부 헤더는 PCH로, 자주 바뀌지 않는 모듈은 unity로. 이 조합이 증분 악화를 최소화하면서 전체 빌드를 줄인다.
 
+🔴 **`_WIN32_WINNT=0x0A00`을 `atlas_net`이 `PUBLIC`으로 정의한다.** 없으면 Boost.Asio가
+`Assuming _WIN32_WINNT=0x0601 (Windows 7)`을 출력하고 실제로 Windows 7 API 표면으로 컴파일된다 —
+dev(Windows)와 prod(Linux)가 서로 다른 소켓 구현을 쓰게 되는 조용한 분기다. `net_types.h`가
+`<boost/asio.hpp>`를 모든 소비자에게 끌고 가므로 값이 타깃마다 달라지면 ODR 위반이 되어 `PUBLIC`이다.
+
 ### 15.2 의존성 — vcpkg manifest 모드
 
-의존성은 3개다: **Boost(asio/beast) · OpenSSL · MySQL client** (+ spdlog).
+의존성은 3개다: **Boost(asio/beast) · OpenSSL · MySQL client** (+ spdlog, gtest).
 
 ```json
-{ "dependencies": ["boost-asio","boost-beast","openssl","libmysql","spdlog"],
-  "builtin-baseline": "<커밋 SHA>" }
+{ "dependencies": ["boost-asio","boost-beast","openssl","libmysql","spdlog","gtest"],
+  "builtin-baseline": "eaca4a577b6b678c6e10252754b6988a61746c19" }
 ```
+
+- **`gtest`** — 테스트 프레임워크는 GoogleTest로 확정(2026-08-06). `gtest_discover_tests`로 §15.4의
+  `test` 단계가 ctest에 결선된다.
+- 🔴 **`builtin-baseline` SHA는 손으로 적지 않는다.** `server/vcpkg.json`은 빈 값으로 시작하고,
+  `server/setup.bat`이 vcpkg를 클론한 직후 `git rev-parse HEAD`의 실측값을 써 넣는다
+  (`server/scripts/set-vcpkg-baseline.ps1`). 지어낸 SHA는 재현성의 반대다.
+  위 값은 그렇게 채워진 실측 SHA다(2026-08-06 최초 `setup.bat` 실행 결과). 이 baseline에서
+  해석된 포트 버전: Boost 1.91.0 · OpenSSL 3.6.3 · libmysql 8.0.46 · spdlog 1.17.0 · gtest 1.17.0.
+  갱신은 vcpkg를 fetch 한 뒤 같은 스크립트를 다시 돌려서 하고, 손으로 고치지 않는다.
 
 - **baseline SHA 고정** → 재현 가능. classic 모드(전역 설치)의 "어제는 됐는데" 문제가 사라진다
 - **로컬 바이너리 캐시는 기본 활성**이다(`%LOCALAPPDATA%\vcpkg\archives`). 두 번째 빌드부터는 Boost를 다시 컴파일하지 않는다
@@ -446,8 +559,27 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
 ### 15.4 CI 게이트
 
 ```
-format-check → clang-tidy → build(unity ON) → build(unity OFF) → test
+gen:check → format-check → clang-tidy → build(unity ON) → build(unity OFF) → test
 ```
+
+🔴 **`gen:check`가 맨 앞에 온다.** "생성 출력을 직접 편집하지 않는다"는 규칙의 유일한 기계 강제다 —
+`server/generated/**`가 현재 입력(`shared/contracts` · `server/db/schema.json`)으로부터 재생성한
+결과와 다르면 여기서 멈춘다. 문서로만 있으면 반드시 손으로 고친 생성물이 커밋된다.
+
+구현: `server/scripts/ci-gate.ps1` (git remote가 붙기 전까지 **이것이 실질 게이트**) 와
+`.github/workflows/ci.yml` (Linux 전사본, 아직 미검증).
+`configure`는 게이트 단계가 아니라 준비 단계로 format-check 앞에 들어간다 — clang-tidy가 요구하는
+`compile_commands.json`은 구성된 Ninja 트리에서만 나오기 때문이다.
+
+🔴 **`clang-tidy` 단계만 두 구현이 동등하지 않다 — CI(Linux/clang) 전용이다.** 로컬 Windows 게이트는
+이 단계를 건너뛴다(조용히가 아니라 사유를 출력하고 건너뛴다). 실측 2026-08-06: MSVC로 구성한
+`compile_commands.json`에 대해 clang-tidy 19.1.5가 CMake PCH 산출물에서 멈춘다 —
+`cmake_pch.cxx.pch` 는 MSVC `/Yc` 바이너리라 clang이 읽지 못한다
+(`is not a valid precompiled PCH file: file doesn't start with AST file magic`).
+PCH만 빼면 같은 호출이 `--warnings-as-errors=*` 에서 exit 0 이므로 비호환은 PCH 하나로 한정된다.
+🔴 그렇다고 `/Y-` 를 끼워 넣지 않는다 — 컴파일러가 실제로 빌드하지 않는 TU를 검사하게 되어
+게이트가 거짓 신호를 준다. 해소 조건은 로컬 clang-cl 도입(§15.1 툴체인)이며, 그 전까지
+네이밍·`bugprone`·`modernize` 강제는 `linux-ci` 에서만 성립한다. 상세는 `cpp-style.md §7.3`.
 
 ---
 

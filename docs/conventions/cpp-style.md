@@ -233,6 +233,10 @@ Checks: >
   readability-identifier-naming,
   cppcoreguidelines-macro-usage,
   bugprone-*, performance-*, modernize-*
+
+HeaderFilterRegex: '[/\\]atlas[/\\]'
+ExcludeHeaderFilterRegex: '[/\\]generated[/\\]'
+
 CheckOptions:
   - { key: readability-identifier-naming.ClassCase,             value: CamelCase }
   - { key: readability-identifier-naming.FunctionCase,          value: CamelCase }
@@ -244,7 +248,9 @@ CheckOptions:
   - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
   - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }
 ```
-🔴 **생성 코드는 반드시 제외한다** — `HeaderFilterRegex`로 `generated/` 배제.
+🔴 **생성 코드는 반드시 제외한다** — `HeaderFilterRegex`로 `atlas/`만 포함하고, `ExcludeHeaderFilterRegex`로 `generated/`를 배제한다. 🔴 배제를 `HeaderFilterRegex` 하나로 처리할 수 없다 — clang-tidy가 쓰는 `llvm::Regex`는 negative lookahead를 지원하지 않는다.
+
+🔴 **`ExcludeHeaderFilterRegex`는 clang-tidy ≥ 19를 요구한다.** 그 미만에서는 키가 조용히 무시되어 생성 코드가 그대로 검사에 걸린다 → **CI 이미지의 clang-tidy를 19 이상으로 고정할 것.**
 
 **`.clang-format`** — 포맷을 논쟁 대상에서 완전히 제거
 ```yaml
@@ -263,9 +269,11 @@ add_library(atlas_core ...)
 target_compile_features(atlas_core PUBLIC cxx_std_20)
 target_compile_definitions(atlas_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(atlas_core PUBLIC
-    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- /utf-8>
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>)
 ```
+
+🔴 **`/utf-8`은 장식이 아니다.** `.editorconfig`가 소스를 UTF-8로 고정하지만 MSVC는 그 사실을 모르고 머신의 ANSI 코드페이지(한국어 개발기라면 949)로 디코드해 C4819를 낸다. 주석 끝의 UTF-8 선행 바이트가 개행을 삼키면 **다음 줄 코드가 주석으로 먹히는** 사고가 가능하므로, 경고 억제가 아니라 정확성 문제다. `PUBLIC`이라 코어를 링크하는 모든 타깃이 함께 받는다.
 
 `target_link_libraries(atlas_world PRIVATE atlas_core)` 한 줄이면 **모든 서버가 같은 표준 · 경고 · 정의를 자동 상속**한다. 새 서버를 추가해도 설정을 잊을 수가 없다.
 
@@ -279,6 +287,37 @@ format-check → clang-tidy → build(unity ON) → build(unity OFF) → test
 - 🔴 **non-unity 빌드가 "누락 include / ODR 충돌" 게이트를 겸한다** (설계 문서 §15.1 대가 4번). 이 게이트가 없으면 반드시 터진다
 - **pre-commit hook**: 변경 파일만 format + tidy. CI보다 먼저 잡아 왕복 비용을 줄인다
 
+#### 🔴 `clang-tidy`는 CI(Linux/clang) 전용이다 — 로컬 Windows 게이트에서는 건너뛴다
+
+실측 2026-08-06 (wp3 STAGE 2). MSVC(`cl.exe`)로 구성한 `compile_commands.json`에 대해
+clang-tidy 19.1.5를 돌리면 CMake의 PCH 산출물에서 멈춘다:
+
+```
+error: file '.../build/windows-ci/atlas/core/CMakeFiles/atlas_core.dir/cmake_pch.cxx.pch'
+       is not a valid precompiled PCH file: file doesn't start with AST file magic
+error: input is not a PCH file: '.../cmake_pch.cxx.pch'
+```
+
+`target_precompile_headers`가 MSVC에서 만드는 `.pch`는 `/Yc` 바이너리이고 clang은 자기 AST 포맷만
+읽는다. **PCH를 뺀 나머지 MSVC 인자는 clang-tidy가 정상 파싱한다** — `/Y-`로 PCH만 억제하면 같은
+호출이 `--warnings-as-errors=*`에서 exit 0이므로, 비호환은 PCH 하나로 한정된다.
+
+- 🔴 **그래서 `--extra-arg=/Y-`를 끼워 넣지 않는다.** 그렇게 하면 **컴파일러가 실제로 빌드하지 않는
+  translation unit**을 검사하게 된다 — PCH가 주입하던 것과 다른 전처리 상태를 보므로, 통과해도
+  실제 빌드를 보증하지 못하고 반대로 없는 문제를 신고한다. 게이트가 거짓 신호를 주는 쪽이
+  게이트가 없는 것보다 나쁘다.
+- 🔴 **PCH를 끄는 것도 답이 아니다.** PCH는 §15.1에서 빌드 시간을 위해 명시적으로 선택한 것이고,
+  린터 하나 때문에 되돌릴 대상이 아니다.
+- ✅ **결정: 강제 지점을 `linux-ci`로 옮긴다.** `.github/workflows/ci.yml`의 clang-tidy 단계는
+  clang이 만든 compile db와 clang이 읽을 수 있는 PCH를 쓰므로 그대로 성립한다.
+  `server/scripts/ci-gate.ps1`은 이 단계를 **사유를 출력하고** 건너뛴다 — 조용한 스킵은 게이트가
+  죽은 것을 감춘다.
+- **대가(감수한다)**: git remote가 붙기 전까지 §7.1의 네이밍 · `bugprone-*` · `modernize-*` 강제가
+  로컬에서 돌지 않는다. 로컬에 남는 기계 강제는 `.clang-format`(층 1) + §7.2 경고 옵션 + unity
+  ON/OFF 두 빌드다.
+- **해소 조건**: 로컬에 clang-cl 도입. clang-cl 프리셋은 clang이 읽는 PCH를 만들므로 그 시점에
+  이 단계를 `ci-gate.ps1`으로 되돌린다.
+
 ---
 
 ## 8. 프레임워크 자산 목록
@@ -289,14 +328,27 @@ format-check → clang-tidy → build(unity ON) → build(unity OFF) → test
 .clang-format
 .clang-tidy
 .editorconfig
-CMakePresets.json
+server/CMakePresets.json
 CI 워크플로
-docs/conventions/cpp-style.md   ← 이 문서
-atlas/core/types.h              (A안 별칭)
-atlas/core/time.h               (chrono 별칭)
-atlas/net/net_types.h           (asio 별칭)
-atlas/core/log.h                (매크로 6종, spdlog 래핑)
-atlas/core/error.h              (ATLAS_THROW / CHECK / ASSERT + Guarded)
+docs/conventions/cpp-style.md          ← 이 문서
+server/atlas/core/types.h              (A안 별칭)
+server/atlas/core/time.h               (chrono 별칭)
+server/atlas/core/ids.h                (강타입 ID 4종 + IdValue)
+server/atlas/core/ctx.h  /  .cpp       (ctx 원장 + CtxScope RAII 설치/복원)
+server/atlas/core/log.h  /  .cpp       (매크로 6종, spdlog 래핑 — spdlog는 .cpp에 은닉)
+server/atlas/core/error.h  /  .cpp     (ATLAS_THROW / CHECK / ASSERT + Guarded)
+server/atlas/net/net_types.h           (asio 별칭)
+server/atlas/net/io_runner.h  /  .cpp  (io_context + 워커 풀 + graceful stop)
+server/atlas/net/session.h    /  .cpp  (strand 세션 — 바이트 스트림까지, 프레이밍 없음)
+server/atlas/net/acceptor.h   /  .cpp  (accept 루프 + 세션 생성)
 ```
+
+🔴 **net 3종이 목록에 있는 이유는 "게임이 바뀌어도 안 바뀌기 때문"이다.** 이 파일들의 경계는
+**바이트 스트림까지**이며 프레임 · 페이로드 식별자 · 무결성 필드를 일절 모른다(설계 문서 §8은 별도
+계층). 게임이 프로토콜을 바꿔도 이 3종은 그대로 따라간다 — 그 경계를 무너뜨리는 순간 자산 목록에서
+빠져야 하는 파일이 된다.
+
+경로에 `server/` 접두가 붙는 이유는 CMake 루트이자 include 루트가 `server/`이기 때문이다 —
+include 지점은 `#include "atlas/core/types.h"`로 쓰지만 파일은 `server/atlas/...`에 있다.
 
 이 목록이 따라가므로 **"게임마다 스타일이 갈리는" 상황이 구조적으로 불가능해진다.**
