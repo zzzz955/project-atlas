@@ -1,0 +1,14 @@
+# Build context is server/. Keep the host's vcpkg clone and build trees out - the builder stage
+# clones and builds its own, and copying them in would both bloat the context and risk shipping
+# Windows binaries into a Linux image.
+vcpkg/
+build/
+out/
+
+# Secrets never enter an image layer (AGENTS.md Mandates).
+.env
+.env.*
+!.env.example
+
+setup.bat
+scripts/

@@ -1,0 +1,83 @@
+# 🔴 UNVERIFIED. This repository had no git remote when the workflow was written (2026-08-06), so
+# not one line of this file has ever executed on a GitHub runner. `server/scripts/ci-gate.ps1` is
+# the gate that is actually exercised today; treat this file as its Linux transcription and
+# re-validate it on the first push.
+#
+# Gate order is architecture-design.md §15.4 plus the gen:check drift step at the front:
+#   gen:check -> format-check -> clang-tidy -> build(unity ON) -> build(unity OFF) -> test
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: npm ci
+        run: npm ci
+
+      # 🔴 Mechanical enforcement of "never edit generated output": if server/generated/** does not
+      # match what the generators produce from the current inputs, the gate stops here.
+      - name: gen:check (generated-output drift)
+        run: npm run gen:check
+
+      # clang-tidy's ExcludeHeaderFilterRegex (used by .clang-tidy to skip generated/) requires
+      # clang-tidy >= 19 - below that the key is silently ignored. cpp-style.md §7.1.
+      - name: install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build clang-format-19 clang-tidy-19 \
+            pkg-config curl zip unzip tar
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
+
+      - name: bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git server/vcpkg
+          server/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+      - name: cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('server/vcpkg.json') }}
+
+      # Configure both trees first: clang-tidy needs the compile_commands.json that only a
+      # configured Ninja tree emits.
+      - name: configure
+        working-directory: server
+        run: |
+          cmake --preset linux-release
+          cmake --preset linux-ci
+
+      - name: format-check
+        run: clang-format --style=file --dry-run -Werror $(find server/atlas server/tests -name '*.h' -o -name '*.cpp')
+
+      # 🔴 This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
+      # clang-tidy cannot read the MSVC /Yc precompiled header that the local Ninja/cl tree emits.
+      # Here clang produces both the compile database and the PCH, so the step is sound.
+      # cpp-style.md §7.3 · architecture-design.md §15.4.
+      - name: clang-tidy
+        run: clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet $(find server/atlas server/tests -name '*.cpp')
+
+      - name: build (unity ON)
+        working-directory: server
+        run: cmake --build --preset linux-release
+
+      # 🔴 The gate that catches missing #includes and ODR collisions (§15.1, cost 4).
+      - name: build (unity OFF)
+        working-directory: server
+        run: cmake --build --preset linux-ci
+
+      - name: test
+        working-directory: server
+        run: ctest --preset linux-ci --output-on-failure

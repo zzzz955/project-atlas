@@ -1,0 +1,22 @@
+# cpp-style.md §7.1 — layer 1. The only thing that actually enforces §3 naming.
+---
+Checks: >
+  readability-identifier-naming,
+  cppcoreguidelines-macro-usage,
+  bugprone-*, performance-*, modernize-*
+
+# Diagnose headers under atlas/ ...
+HeaderFilterRegex: '[/\\]atlas[/\\]'
+# ... but never generated output (cpp-style.md §7.1: generated code is excluded).
+ExcludeHeaderFilterRegex: '[/\\]generated[/\\]'
+
+CheckOptions:
+  - { key: readability-identifier-naming.ClassCase,             value: CamelCase }
+  - { key: readability-identifier-naming.FunctionCase,          value: CamelCase }
+  - { key: readability-identifier-naming.TypeAliasCase,         value: CamelCase }
+  - { key: readability-identifier-naming.VariableCase,          value: lower_case }
+  - { key: readability-identifier-naming.PrivateMemberSuffix,   value: _ }
+  - { key: readability-identifier-naming.NamespaceCase,         value: lower_case }
+  - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
+  - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
+  - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }

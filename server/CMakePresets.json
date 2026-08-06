@@ -1,0 +1,82 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": { "VCPKG_TARGET_TRIPLET": "x64-linux" }
+    },
+    {
+      "name": "windows-debug",
+      "displayName": "Windows Debug (unity ON)",
+      "description": "Local dev loop. Unity build ON for speed.",
+      "inherits": "windows-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_UNITY_BUILD": "ON" }
+    },
+    {
+      "name": "windows-ci",
+      "displayName": "Windows CI (unity OFF)",
+      "description": "Gate build. Unity OFF is what catches missing #includes and ODR collisions.",
+      "inherits": "windows-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_UNITY_BUILD": "OFF" }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux Release (unity ON)",
+      "description": "Docker / deployment build.",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "CMAKE_UNITY_BUILD": "ON" }
+    },
+    {
+      "name": "linux-ci",
+      "displayName": "Linux CI (unity OFF)",
+      "description": "Gate build. Unity OFF is what catches missing #includes and ODR collisions.",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_UNITY_BUILD": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-debug", "configurePreset": "windows-debug" },
+    { "name": "windows-ci", "configurePreset": "windows-ci" },
+    { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-ci", "configurePreset": "linux-ci" }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-ci",
+      "configurePreset": "windows-ci",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    {
+      "name": "linux-ci",
+      "configurePreset": "linux-ci",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    }
+  ]
+}

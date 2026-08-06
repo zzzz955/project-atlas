@@ -1,0 +1,10 @@
+# cpp-style.md §7.1 — layer 1: newline, encoding, indentation.
+# The `*` glob covers C++, CMake, YAML, JSON and Markdown alike.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
