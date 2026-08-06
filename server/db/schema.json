@@ -1,0 +1,26 @@
+{
+  "_comment": "db_generator 입력. 타입은 tools/types.json 의 정규화 타입만 쓴다(string(N)/datetime 은 생성기 특수 처리). 출력 경로·네임스페이스는 template.ini [db-gen] 소유.",
+  "database": "atlas",
+  "tables": [
+    {
+      "name": "characters",
+      "comment": "GAME 서버가 소유하는 캐릭터 영속 테이블. PK는 (server_id, character_id) 스코프(design §6) — 한 계정이 여러 서버에 여러 캐릭터를 가진다. account_uid 는 platform-auth 가 소유하는 계정 식별자의 참조값이며 이 레포가 계정을 재설계하지 않는다. pos_x/pos_y 는 공유 필드 1개의 그리드 좌표, level/exp 는 성장 축 1개 — 둘 다 데모 최소 집합(design §3.3)이며 🔴 이 표를 그 이상 늘리지 않는다.",
+      "columns": [
+        { "name": "server_id",     "type": "uint16",     "pk": true, "null": false },
+        { "name": "character_id",  "type": "uint64",     "pk": true, "null": false },
+        { "name": "account_uid",   "type": "uint64",     "null": false },
+        { "name": "name",          "type": "string(32)", "null": false },
+        { "name": "pos_x",         "type": "int32",      "null": false, "default": 0 },
+        { "name": "pos_y",         "type": "int32",      "null": false, "default": 0 },
+        { "name": "level",         "type": "uint16",     "null": false, "default": 1 },
+        { "name": "exp",           "type": "uint64",     "null": false, "default": 0 },
+        { "name": "created_at",    "type": "datetime",   "null": false },
+        { "name": "last_login_at", "type": "datetime",   "null": true }
+      ],
+      "indexes": [
+        { "name": "idx_characters_account_uid", "columns": ["server_id", "account_uid"], "unique": false },
+        { "name": "uq_characters_name",         "columns": ["server_id", "name"],        "unique": true }
+      ]
+    }
+  ]
+}
