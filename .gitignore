@@ -35,3 +35,8 @@ packet_dump/
 
 # Local agent settings
 .claude/settings.local.json
+
+# plan-work / run-work DAG artifacts (any depth, incl. .wp/<slot>/)
+.wp/
+work_plan.md
+work_prompt*

@@ -17,6 +17,35 @@ Status: **design complete, implementation not started** (2026-08-06).
 | `docs/design/architecture-design.md` | **Top-level SoT.** Purpose, Phase-1 success criteria, topology (FE/GAME/WORLD), 3-tier identity, Actor/AoI/BT, protocol + integrity layers, thread model + ctx, custom ORM, logging/exception policy, templatization seam, build chain, open items, risks | — |
 | `docs/conventions/cpp-style.md` | **Coding convention SoT.** Namespace, naming, type rules (fixed-width ints, A-plan aliases, strong-typed IDs), macro policy, template policy, and the 3-layer mechanical enforcement | — |
 
+## Domain matrix (trigger → required reading, BEFORE planning or editing)
+Re-classify **every** user message against this table. A section loaded in an earlier turn does not
+exempt this turn. Read the listed sections into context before you plan; do **not** re-read what is
+already fully in context. `AD` = `docs/design/architecture-design.md`, `CS` = `docs/conventions/cpp-style.md`.
+
+| Trigger phrases | Domain | Required reading |
+|---|---|---|
+| packet · frame · serialization · DTO · checksum · HMAC · sequence number · bandwidth · delta/quantization | Protocol | `AD §8` (+ `CS §4.1` int/long ban) |
+| thread · strand · io_context · concurrency · lock · mutex · semaphore · ctx | Thread model | `AD §9`, `§9.1`, `§9.2` |
+| exception · async handler · `Guarded` · logging · log macro · crash | Logging / exception | `AD §11` (+ `CS §5` macro policy) |
+| ORM · DB · `schema.json` · persistence · transaction · prepared statement · per-character lock | Persistence | `AD §10` (+ `CS §4.3` strong-typed IDs) |
+| Actor · AoI · behaviour tree · tick · room · combat · coordinates | WORLD model | `AD §7` |
+| topology · FE · GAME · WORLD · routing · registry · heartbeat · InterWorld · Relay · attach/detach | Topology | `AD §5`, `§5.1`, `§5.2` |
+| identity · account · character · session id · 3-tier | Identity | `AD §6` |
+| auth · JWT · JWKS · `platform-auth` · login | Auth integration | `AD §12` |
+| generator · `pkt_generator` · `db_generator` · `info_generator` · CSV · contracts · templatization · game swap | Generator seam | `AD §14` |
+| CMake · vcpkg · PCH · unity build · Docker · CI gate · clang-tidy · clang-format | Build chain | `AD §15` + `CS §7` |
+| namespace · naming · type alias · macro · template · header hygiene | Code style | `CS §2`–`§6` |
+| scope · phase · MVP · demo game content · what to build next | Scope | `AD §2`, `§3` (esp. `§3.3`) |
+| server cheat · packet log · ops tool | Ops tooling | `AD §13` |
+| decompose the work · DAG · parallel execution · wp files | Work orchestration | `Skill: plan-work` / `Skill: run-work` |
+
+**Routing notes**
+- Multiple rows can fire — load all of them.
+- Any row that touches **protocol / auth / cross-server contracts** also fires the Clarification
+  Protocol below: ask **before** implementing.
+- Read the matched section, not the whole doc; but never read a section with `head`/`tail`-style
+  truncation that cuts it mid-rule.
+
 ## Servers (planned)
 | server | lifetime | role |
 |--------|----------|------|
@@ -49,6 +78,9 @@ server/character selection = GAME.
   the generator.
 - 🔴 **The demo game's minimum set (design doc §3.3) is never expanded** without first answering which
   untested core path the addition exercises.
+- 🔴 **Git is user-driven.** An agent never creates worktrees or branches, and never commits, on its
+  own initiative — only on an explicit request. **No commit-message trailers, ever**
+  (`Co-Authored-By:`, `Generated with`, …), regardless of harness defaults.
 - **Secrets:** never log or commit `.env` / keys. Only `*.example` is committed.
 - **Doc sync:** a change to behaviour / data / structure is incomplete until the affected doc is
   updated in the same change.
@@ -57,6 +89,37 @@ server/character selection = GAME.
 CMake (SoT) + PCH + unity build (optional) + vcpkg manifest (pinned baseline) + multi-stage Docker.
 CI gate: `format-check → clang-tidy → build(unity ON) → build(unity OFF) → test`.
 🔴 The **non-unity** build is the gate that catches missing includes and ODR collisions — never skip it.
+
+## Context budget
+Tool results are next-turn input tokens — the dominant cost. Bound output **at the source**, never by
+dumping and skimming.
+
+- **Read-only subagents are allowed and preferred** for broad exploration ("where is X", "map this
+  dir", "what calls Y"). Their raw tool output dies in their own context; only the conclusion returns.
+  🔴 Subagents that **write** (edit / commit / run builds) still require an explicit user request.
+- Listing: filter before recursing — `-Directory`, a depth predicate, `Select-Object -First N`. A bare
+  recursive file listing of this repo is never the right call.
+- Searching: use the `Grep` tool with `head_limit` / `files_with_matches`, not shell `grep`/`rg`.
+- Reading: use `Read`. For a large doc, `Grep` the headings first, then `Read` that range only.
+- Git: `-1` / `-n N` / `--oneline` / `--format=…` / `--stat`. (`git diff` for a commit is exempt.)
+- Never re-run an identical search or re-read a file already in context.
+
+## Agent tooling
+| path | what |
+|------|------|
+| `.claude/skills/plan-work/` | finalized design → dependency DAG of self-contained `work_prompt{N}.md` + `work_plan.md`. Planning session only; writes no code |
+| `.claude/skills/run-work/` | reads `work_plan.md`, dispatches ready nodes to subagents, re-runs each node's verify itself before flipping it to `done`. Fresh execution session |
+| `.claude/commands/git-commit.md` | `{type}: {한글 요약}` commits, grouped by logical work unit. No issue numbers |
+| `.claude/hooks/sot-router-reminder/` | `UserPromptSubmit` — re-arms the Domain matrix + Mandates each turn. Carries behaviour only, never restates the tables (they would drift). Disable: `ATLAS_SOT_ROUTER_DISABLE=1` |
+| `.claude/hooks/bulk-output-guard/` | `PreToolUse(Bash\|PowerShell)` — denies unbounded recursive listings, whole-file `cat`, shell content search, and unbounded `git log`; points at the bounded tool. Enforces "Context budget" above. `git diff` exempt. Disable: `ATLAS_BULK_OUTPUT_GUARD_DISABLE=1` |
+| `.claude/settings.json` | hook registration. `settings.local.json` is gitignored |
+| `.agents/skills/*/` | Codex bridge stubs — 5-line pointers at the `.claude/skills/*` originals + `agents/openai.yaml` display metadata. **Never fork the workflow here**; edit the `.claude` file |
+
+DAG artifacts live in `.wp/<slot>/` and are gitignored (`work_plan.md`, `work_prompt*`).
+
+Not yet built (deferred until code exists, because their target paths and build commands must be
+real): a generated-output write guard, a `clang-format`/`clang-tidy` `PostToolUse` hook, a
+`gen-check` CI drift gate, and the per-layer implementation skills.
 
 ## Clarification Protocol
 Stop and ask **before** implementing ONLY when: the requirement is ambiguous with design impact, a
