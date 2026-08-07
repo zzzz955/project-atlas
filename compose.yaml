@@ -1,0 +1,91 @@
+# project-atlas — 로컬 / 단일 호스트 compose (architecture-design.md §15.3)
+#
+# 🔴 CD는 Phase 1 비범위다(§3.4 · §15.3). 레지스트리 푸시 · 롤아웃 · 무중단 전환은 여기 없다.
+#    이 파일이 정하는 범위는 "compose 로 로컬/단일 호스트를 띄우는 데까지" 다.
+#    healthcheck 는 배포 판정용이 아니라 mysql 준비 대기(depends_on) 용도로만 쓴다.
+#
+# 자격증명은 server/.env 에만 있다(§5.4). server/.env 가 없으면 기동이 실패하는 것이 정상이다 —
+# 조용한 기본값을 두면 개발용 비밀번호가 레포에 박히는 경로가 정확히 그렇게 생긴다.
+#
+# 🔴 그래서 필수 변수는 전부 `${VAR:?메시지}` 다. 빠진 변수는 경고가 아니라 **에러**이고, 에러에
+#    변수 이름이 찍힌다. 시작점은 항상 이것이다:
+#      cp server/.env.example server/.env    # 비-시크릿은 이미 채워져 있고, 비밀번호 2개만 넣으면 된다
+#
+# 🔴 `${...}` 치환은 compose **프로젝트 env-file** 에서 온다. 서비스의 `env_file:` 은 컨테이너에
+#    변수를 주입할 뿐 치환에는 쓰이지 않는다. 그래서 실제 기동은 항상 아래 형태다:
+#      docker compose --env-file server/.env up -d                    # mysql 만
+#      docker compose --env-file server/.env --profile cache up -d    # + redis
+#      docker compose --env-file server/.env --profile app  up -d     # + server (바이너리 생긴 뒤)
+
+services:
+  # 기본 기동 대상. ORM(§10)의 유일한 필수 런타임 의존이라 프로파일 뒤에 숨기지 않는다.
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    env_file:
+      - server/.env
+    environment:
+      # 🔴 `${VAR}` 는 미설정을 **경고 한 줄 뒤 빈 문자열**로 통과시킨다 — 빈 비밀번호로 DB가 뜨고,
+      #    무엇이 빠졌는지는 경고 더미에 묻힌다. `${VAR:?메시지}` 는 변수 이름과 함께 명령을 즉시
+      #    죽인다. 포트처럼 진짜 기본값이 있는 값만 `:-` 를 쓴다.
+      MYSQL_DATABASE: ${ATLAS_DB_NAME:?ATLAS_DB_NAME must be set (see server/.env.example)}
+      MYSQL_USER: ${ATLAS_DB_USER:?ATLAS_DB_USER must be set (see server/.env.example)}
+      MYSQL_PASSWORD: ${ATLAS_DB_PASSWORD:?ATLAS_DB_PASSWORD must be set - server/.env.example ships it empty on purpose}
+      MYSQL_ROOT_PASSWORD: ${ATLAS_DB_ROOT_PASSWORD:?ATLAS_DB_ROOT_PASSWORD must be set - server/.env.example ships it empty on purpose}
+    ports:
+      - "${ATLAS_DB_PORT:-3306}:3306"
+    volumes:
+      - atlas-mysql-data:/var/lib/mysql
+      # 🔴 schema.sql 은 db_generator 생성물이다. 복사본을 만들면 gen:check 밖에서 드리프트가
+      #    생기므로 읽기 전용 바인드로 건다 — compose 는 이 파일을 절대 복제/수정하지 않는다.
+      - ./server/generated/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+
+  # 🔴 기본 기동에서 제외 — 정의만 두고 쓰지 않는다(§10.2).
+  #    Phase 1 성공 기준 6개(§2) 중 Redis 를 요구하는 항목이 0개이고, FE 1 · GAME 1 고정 구성에서는
+  #    분산 락도 캐시 공유도 성립하지 않는다. 그래서 server/vcpkg.json 에 C++ Redis 클라이언트를
+  #    추가하지 않는다(§15.2) — 여기 있는 것은 자리 표시이지 의존성이 아니다.
+  # 🔴 §10.2 허용 역할표(읽기 캐시 · 분산 락 · WORLD 레지스트리 복구 사본) 밖의 용도로 쓰지 않는다.
+  #    특히 **서버 간 게임 트래픽 pub/sub 은 금지**다. 그것은 §5.2 "WORLD ↔ WORLD 직접통신 금지"를
+  #    문자적으로만 지키면서 의미를 파괴하는 우회로이고, Phase 3 Relay 가 들어갈 자리를 없앤다.
+  redis:
+    profiles: [cache]
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${ATLAS_REDIS_PORT:-6379}:6379"
+    volumes:
+      - atlas-redis-data:/data
+
+  # 🔴 기본 기동에서 제외 — FE/GAME/WORLD 바이너리는 후속 슬라이스다. 지금은 entrypoint 뼈대만
+  #    있고(role → 바이너리 경로 매핑과, 바이너리가 없을 때의 명확한 실패까지), 그 이상을 감싸지
+  #    않는다(§15.3).
+  # 단일 이미지 + ATLAS_ROLE 분기 entrypoint: 서버 3종을 각각의 이미지로 굽지 않는다. role 별로
+  # 배포 단위를 쪼개면 §5.2의 "WORLD 와 InterWorld 는 동일 바이너리" 명제가 이미지 층에서 깨진다.
+  server:
+    profiles: [app]
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - server/.env
+    environment:
+      # 🔴 기본값을 두지 않는다. entrypoint 는 ATLAS_ROLE 미설정을 기동 실패로 다루는데
+      #    (scripts/entrypoint.sh · §15.3), compose 가 `:-game` 으로 조용히 채워 주면 그 방어가
+      #    여기서 무력화되고 변수를 깜빡한 운영자는 엉뚱하게 GAME 서버를 얻는다. `:?` 로 즉시 실패.
+      #    이 값은 배포층의 바이너리 선택이고, 런타임 정체성은 server.ini `[server] role` 이다 —
+      #    둘은 반드시 같은 값이어야 한다.
+      ATLAS_ROLE: ${ATLAS_ROLE:?ATLAS_ROLE must be set (fe | game | world | interworld)}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+volumes:
+  atlas-mysql-data:
+  atlas-redis-data:

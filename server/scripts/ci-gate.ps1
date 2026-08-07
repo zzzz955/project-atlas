@@ -3,7 +3,8 @@
     project-atlas CI gate (architecture-design.md §15.4, cpp-style.md §7.3).
 
 .DESCRIPTION
-    gen:check -> format-check -> clang-tidy -> build(unity ON) -> build(unity OFF) -> test
+    gen:check -> core-purity -> format-check -> clang-tidy -> build(unity ON) -> build(unity OFF)
+    -> test
 
     The repository has no git remote yet, so this script - not .github/workflows/ci.yml - is the
     gate that is actually exercised. Keep the two in step.
@@ -88,6 +89,14 @@ $buildDirUnityOff = Join-Path $ServerDir "build/$UnityOffPreset"
 Invoke-Step 'gen:check (generated-output drift)' {
     Push-Location $RepoRoot
     try { npm run gen:check } finally { Pop-Location }
+}
+
+# 🔴 Mechanical enforcement of "the core must not know the game" (architecture-design.md §14, §15.4).
+# Implemented once in Node (tools/core_purity/) so this gate and .github/workflows/ci.yml run the
+# same checker - two transcriptions of the same rule drift apart silently.
+Invoke-Step 'core-purity (core must not know the game)' {
+    Push-Location $RepoRoot
+    try { npm run check:core-purity } finally { Pop-Location }
 }
 
 Invoke-Step "configure ($UnityOnPreset, $UnityOffPreset)" {

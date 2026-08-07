@@ -11,4 +11,8 @@ out/
 !.env.example
 
 setup.bat
-scripts/
+
+# scripts/ is dev tooling (ci-gate.ps1, setup helpers) and stays out of the image - except the
+# container entrypoint, which the runtime stage COPYs.
+scripts/*
+!scripts/entrypoint.sh
