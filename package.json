@@ -13,6 +13,7 @@
     "gen:pkt": "node tools/pkt_generator/pkt_generator.js",
     "gen:pkt:check": "node tools/pkt_generator/pkt_generator.js --check",
     "gen:all": "npm run gen:db && npm run gen:pkt",
-    "gen:check": "npm run gen:db:check && npm run gen:pkt:check"
+    "gen:check": "npm run gen:db:check && npm run gen:pkt:check",
+    "check:core-purity": "node tools/core_purity/core_purity.js"
   }
 }

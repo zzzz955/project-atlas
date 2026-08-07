@@ -19,6 +19,29 @@
 | `types.json` | **정규화 타입 → 엔진 타입 매핑의 SoT.** `cpp` · `mysql` · `csharp` · `gdscript` 4열 |
 | `all_generator.bat` | 일괄 실행 배치. 순서 `db → pkt`, 단계 실패 시 중단, `tools/logs/` 에 타임스탬프 로그. `GEN_BATCH_NO_PAUSE=1` 이면 종료 대기 없음 |
 
+## `core_purity/` — 🔴 생성기가 아니라 검사기다
+
+`tools/` 에 있지만 위의 입력 → 출력 표에 넣지 않는다. **아무것도 생성하지 않는다** — 스캔하고 exit
+code 로만 말한다. `architecture-design.md §15.4` 게이트의 두 번째 단계이며, `§14` 의
+"코어(고정) / 계약(생성) / 게임(교체)" 경계를 기계로 강제한다. `gen:check` 가 "생성물 손편집"에 대해
+하는 일을, 이 검사기가 "코어 오염"에 대해 한다.
+
+| 파일 | 역할 |
+|---|---|
+| `core_purity.js` | `server/atlas/**/*.{h,cpp}` 스캔. `--root <dir>` 로 루트 교체(픽스처용). 🔴 스캔 파일 0개면 exit 1 — 경로 오타로 영원히 초록불이 되는 것이 이 검사의 최악 실패 모드다 |
+| `denylist.txt` | 규칙 2 용어 목록(§3.3 데모 게임 어휘). 대소문자 무시 **부분 문자열** 매칭 — `boss_id` · `ApplySkillDamage` 를 잡기 위해서다. 🔴 데모 게임이 자라면 이 목록도 같이 자란다 |
+| `allowlist.txt` | 규칙 1 예외. 오늘 항목 0개. 각 줄은 `<경로>  # <사유> (§절번호)` 이며 🔴 사유 없는 줄은 검사기가 exit 1 한다 |
+| `testdata/` | 위반 픽스처 2개(`rule1_violation` · `rule2_violation`). 검사기가 실제로 잡는지 확인용이며 컴파일 대상이 아니다 |
+
+검사 2가지 — ① `server/atlas/**` 가 `generated/` 헤더를 include 하지 않는다(코어는 opcode 로
+디스패치하지 게임 DTO 를 알지 않는다) ② `denylist.txt` 용어가 0건. 제외: `generated/`(생성물) ·
+`tests/`(테스트는 게임 어휘를 써도 된다). 주석과 코드를 구분하지 않는다 — 주석에 게임 이름이 박히는
+것도 오염이다.
+
+🔴 구현이 Node 한 벌인 이유: 로컬 게이트는 PowerShell(`server/scripts/ci-gate.ps1`), CI 는
+bash(`.github/workflows/ci.yml`) 인데 스크립트를 두 벌 쓰면 같은 규칙의 두 전사본이 조용히 갈라진다.
+`gen:check` 가 이미 쓰는 "양쪽에서 `npm run` 으로 부른다" 패턴을 그대로 따른다.
+
 ## 실행
 
 레포 **루트**에서 실행한다(`config-loader` 가 루트 기준으로 `template.ini` 를 찾는다).
@@ -28,6 +51,8 @@ npm run gen:all      # db → pkt 전체 재생성
 npm run gen:db       # 개별
 npm run gen:pkt
 npm run gen:check    # 드리프트 게이트 — 생성물이 입력과 어긋나면 exit 1
+
+npm run check:core-purity   # 코어 순수성 게이트 — 코어가 게임을 알면 exit 1 (생성기 아님)
 ```
 `tools\all_generator.bat` 은 `gen:all` 과 같은 순서를 배치로 돌리며 로그 파일을 남긴다.
 🔴 `gen:*` 스크립트는 **이 레포가 실제로 만드는 생성기**만 가리킨다. 아무도 쓰지 않을 생성기를 가리키는

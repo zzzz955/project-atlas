@@ -1,0 +1,9 @@
+# core-purity 규칙 1 예외 목록 — `server/atlas/**` 가 include 해도 되는 `generated/` 헤더.
+# 근거: architecture-design.md §14(코어/계약/게임 3층) · §15.4(게이트).
+#
+# 🔴 오늘 항목은 0개다. 코어는 opcode 로 디스패치하지 특정 게임 DTO 를 알지 않는다.
+# 🔴 항목을 추가할 때는 같은 줄에 사유와 근거 절 번호를 적는다. 사유 없는 줄은 검사기가 exit 1 한다 —
+#    사유 없이 늘어나는 예외 목록은 검사 자체를 무의미하게 만든다.
+#
+# 형식: <include 경로>  # <사유> (§절번호)
+# 예시: generated/pkt/opcode.h  # 코어 디스패처가 opcode 범위만 참조 (§8.2)
