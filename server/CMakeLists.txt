@@ -16,6 +16,7 @@ set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
 enable_testing()
 
 add_subdirectory(atlas/core)
+add_subdirectory(atlas/config)
 add_subdirectory(atlas/net)
 add_subdirectory(generated)
 add_subdirectory(tests)
