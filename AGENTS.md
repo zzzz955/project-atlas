@@ -14,7 +14,7 @@ Status: **design complete, implementation not started** (2026-08-06).
 ## Nav
 | path | role | doc |
 |------|------|-----|
-| `docs/design/architecture-design.md` | **Top-level SoT.** Purpose, Phase-1 success criteria, topology (FE/GAME/WORLD), 3-tier identity, Actor/AoI/BT, protocol + integrity layers, thread model + ctx, custom ORM, logging/exception policy, templatization seam, build chain, open items, risks | — |
+| `docs/design/architecture-design.md` | **Top-level SoT.** Purpose, Phase-1 success criteria, topology (FE/GAME/WORLD), config sources `§5.4`, 3-tier identity, Actor/AoI/BT, protocol + integrity layers, thread model + ctx, custom ORM + Redis policy `§10.2`, logging/exception policy, templatization seam (4 layers, incl. deploy/stack config), build chain — compose deploy `§15.3`, CI gate `§15.4`, CI infra/vcpkg cache `§15.5` — open items, risks | — |
 | `docs/conventions/cpp-style.md` | **Coding convention SoT.** Namespace, naming, type rules (fixed-width ints, A-plan aliases, strong-typed IDs), macro policy, template policy, and the 3-layer mechanical enforcement | — |
 
 ## Domain matrix (trigger → required reading, BEFORE planning or editing)
@@ -34,6 +34,7 @@ already fully in context. `AD` = `docs/design/architecture-design.md`, `CS` = `d
 | auth · JWT · JWKS · `platform-auth` · login | Auth integration | `AD §12` |
 | generator · `pkt_generator` · `db_generator` · `info_generator` · CSV · contracts · templatization · game swap | Generator seam | `AD §14` |
 | CMake · vcpkg · PCH · unity build · Docker · CI gate · clang-tidy · clang-format | Build chain | `AD §15` + `CS §7` |
+| compose · docker · `.env` · `server.ini` · role 설정 · Redis · 배포 | Infra | `AD §5.4`, `§10.2`, `§15.3`, `§15.5` |
 | namespace · naming · type alias · macro · template · header hygiene | Code style | `CS §2`–`§6` |
 | scope · phase · MVP · demo game content · what to build next | Scope | `AD §2`, `§3` (esp. `§3.3`) |
 | server cheat · packet log · ops tool | Ops tooling | `AD §13` |
@@ -64,6 +65,11 @@ server/character selection = GAME.
   (or, in Phase 3, Relay). Breaking this now turns Phase 3 into a full redesign.
 - 🔴 **WORLD and InterWorld are the same binary**, distinguished by ini config (`role`, `world_id`,
   `server_group`). InterWorld is a configuration variant, not a new server.
+- 🔴 **Redis pub/sub is never used for inter-server game traffic** — it is the bypass route around the
+  WORLD ↔ WORLD rule above, and taking it deletes the Phase-3 Relay seam. `AD §10.2`.
+- 🔴 **Secrets live in `.env` only, never in `server.ini`.** `server.ini` is committed and holds
+  role/ids/ports/workers/log config; credentials and hosts stay in `.env` (`*.example` only). The
+  config loader logs secret **key names, never values**. `AD §5.4`.
 - 🔴 **`int` / `long` are banned** in protocol / persistence / ID layers — Windows is LLP64, Linux is
   LP64, so `long` differs in size between dev and prod. Fixed-width aliases only (`Int32`, `UInt64`).
 - 🔴 **Never `#pragma pack` a packet struct.** `pkt_generator` emits per-field write/read.
@@ -101,11 +107,15 @@ only: the VS generator emits no `compile_commands.json` and clang-tidy needs it.
 Configure before building a fresh tree: `cmake --preset windows-debug` / `cmake --preset windows-ci`
 (run from `server/`; `setup.bat` already does the `windows-debug` one).
 Presets: `windows-debug` · `windows-ci` · `linux-release` · `linux-ci` (`{win,linux}-ci` = unity OFF).
-CI gate order: `gen:check → format-check → clang-tidy → build(unity ON) → build(unity OFF) → test`
-(`ci-gate.ps1` inserts `configure` as prep between steps 1 and 2 — clang-tidy needs the Ninja tree's
-`compile_commands.json`, so it prints 7 numbered steps).
+CI gate order: `gen:check → core-purity → format-check → clang-tidy → build(unity ON) → build(unity
+OFF) → test` (`ci-gate.ps1` inserts `configure` as prep before `format-check` — clang-tidy needs the
+Ninja tree's `compile_commands.json`, so its printed step count is the list above plus that one).
 🔴 The **non-unity** build is the gate that catches missing includes and ODR collisions — never skip it.
 🔴 `gen:check` leads the gate: it is the mechanical enforcement of "never edit generated output".
+🔴 `core-purity` follows it: the mechanical enforcement of "the core must not know the game" —
+`server/atlas/**` may not include game-contract headers from `server/generated/**`, and must contain
+zero terms from `tools/core_purity/denylist.txt`. The denylist grows with the demo game (`AD §3.3`).
+`AD §15.4`.
 🔴 **`clang-tidy` is CI-only (Linux/clang); `ci-gate.ps1` skips it and says so.** clang-tidy cannot
 read the MSVC PCH the local Ninja/cl tree emits (`cmake_pch.cxx.pch` is a `/Yc` binary, not clang
 AST). Suppressing the PCH just to satisfy the linter would tidy a TU the compiler never builds, so
@@ -143,10 +153,11 @@ dumping and skimming.
 
 **Repo layout**
 ```
-server/    C++ framework + CMake root + setup.bat + db/schema.json + generated/{pkt,db}
+server/    C++ framework + CMake root + setup.bat + server.ini + .env.example
+           + db/schema.json + generated/{pkt,db}
 shared/    contracts/ (*.cs → pkt input) · datas/ (*.csv → info input)
 tools/     2 generators (Node: pkt, db) + config-loader.js + types.json
-docs/  template.ini  package.json          (client/ is a later slice)
+docs/  template.ini  package.json  compose.yaml     (client/ is a later slice)
 ```
 
 DAG artifacts live in `.wp/<slot>/` and are gitignored (`work_plan.md`, `work_prompt*`).

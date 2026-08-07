@@ -40,6 +40,8 @@ Phase 1은 **2026-11-30**까지다(AX 지원사업 종료 시점). 아래가 전
 | 정합성 | 패킷 로그 기준 **desync 0** |
 | 산출물 | 부하 실측 리포트 + 공개 레포 + 기술 블로그 |
 
+🔴 **공개 레포명은 `project-atlas`로 확정됐다** (2026-08-07 공개, `https://github.com/zzzz955/project-atlas`). 이미 푸시된 이후의 rename은 링크 · 스타 · 검색 인덱스를 전부 버리므로 되돌리지 않는다. **게임 타이틀은 레포명과 별개 항목이며 여전히 미결이다**(§16).
+
 🔴 p95/대역폭의 구체 목표치를 지금 정하지 않는다. 1차 부하 측정 전의 숫자는 근거 없는 추측이고, 근거 없는 목표는 나중에 조용히 낮춰진다.
 
 ---
@@ -72,6 +74,8 @@ Phase 1은 **2026-11-30**까지다(AX 지원사업 종료 시점). 아래가 전
 ### 3.4 비범위 (Phase 1)
 
 퀘스트 · 스토리 · NPC 대화 · 장비 슬롯 다중화 · 직업 다수 · 오픈월드 · PvP · 결제 · 클라이언트 UI 완성도
+
+🔴 **CD(배포 자동화)도 비범위다** (2026-08-07 확정). 레지스트리 푸시 · 무중단 롤아웃 · 배포 파이프라인은 Phase 1에서 만들지 않는다. 배포는 `compose`로 로컬/단일 호스트 기동까지이며(§15.3), CI 게이트(§15.4)까지만 자동화한다.
 
 ---
 
@@ -125,8 +129,8 @@ Phase 1은 **2026-11-30**까지다(AX 지원사업 종료 시점). 아래가 전
 
 Relay/Matching/InterWorld를 MVP에서 만들지 않지만, **붙을 자리는 지금 설계에 새긴다.**
 
-- **WORLD ↔ WORLD 직접 통신 금지.** 서버 간 통신은 전부 FE 경유 또는 (Phase 3) Relay 경유. 이 규칙을 지금 지키면 Relay 도입이 배선 작업이 되고, 어기면 Phase 3에서 전면 재설계가 된다.
-- **WORLD와 InterWorld는 동일 바이너리.** 자기 정체성은 ini 설정으로 식별한다(`role=world` / `role=interworld`, `world_id`, `server_group`). 즉 InterWorld는 신규 서버가 아니라 **WORLD의 설정 변형**이다.
+- **WORLD ↔ WORLD 직접 통신 금지.** 서버 간 통신은 전부 FE 경유 또는 (Phase 3) Relay 경유. 이 규칙을 지금 지키면 Relay 도입이 배선 작업이 되고, 어기면 Phase 3에서 전면 재설계가 된다. 🔴 이 금지는 **전송 수단과 무관하다** — TCP 직결뿐 아니라 메시지 브로커를 경유한 우회도 같은 위반이다. Redis pub/sub 이 그 대표 우회로이며, 판정과 근거는 **§10.2**에 있다.
+- **WORLD와 InterWorld는 동일 바이너리.** 자기 정체성은 ini 설정으로 식별한다(`role=world` / `role=interworld`, `world_id`, `server_group`). 즉 InterWorld는 신규 서버가 아니라 **WORLD의 설정 변형**이다. 그 ini가 무엇을 담고 무엇을 담지 않는지는 **§5.4**가 정한다.
 - **GAME은 고정, WORLD는 유동.** WORLD는 기동 시 FE에 등록하고 하트비트를 보낸다. 이탈하면 FE가 세션을 재배치한다. 이 성질이 Phase 1 성공 기준의 "무중단 재배치" 항목이다.
 
 ### 5.3 재사용 판정
@@ -137,6 +141,23 @@ Relay/Matching/InterWorld를 MVP에서 만들지 않지만, **붙을 자리는 �
 | 데이터 파이프라인 규약 (`db_generator` / `pkt_generator` / `info_generator`) | 자매 프로젝트에서 검증됨 | **계승 + C++ 타깃 추가** |
 | 서버 치트 2계층 게이트 설계 | `project-roll` ADR-0067 | **계승** |
 | GAME 서버 본체 | ASP.NET Core 템플릿 존재 | 🔴 **재사용하지 않는다.** C++로 새로 만든다 — 그것이 이 프로젝트의 목적이기 때문이다 |
+
+### 5.4 설정 소스 — ini 와 .env 를 섞지 않는다
+
+§5.2가 `role` / `world_id` / `server_group` 을 ini로 식별한다고 못 박았으므로, 그 ini를 도입하면서 **경계도 같이 못 박는다.** 설정 소스는 2개이고, 서로의 영역을 침범하지 않는다.
+
+| 소스 | 담는 것 | 특성 |
+|---|---|---|
+| `server/server.ini` (커밋됨) | `role` · `server_id` · `world_id` · `server_group` · 포트 · IO 워커 수 · 로그 레벨/보존 | 게임·배포별 변형. 코드 리뷰 대상 |
+| `.env` (🔴 커밋 금지, `*.example` 만) | DB/Redis 호스트·자격증명 · JWKS URL · `ATLAS_ROLE` | 배포 환경별. 시크릿 |
+
+🔴 **`ATLAS_ROLE` 은 표에서 유일한 예외이자 중복이다.** 컨테이너는 ini를 읽는 코드가 돌기 **전에** 어느 바이너리를 exec 할지 정해야 하므로, 배포층의 선택은 환경변수일 수밖에 없다(§15.3). 그래서 `.env` 의 `ATLAS_ROLE`(= 실행할 바이너리)과 `server.ini` 의 `[server] role`(= 런타임 정체성)은 **같은 값이어야 한다.** 어긋나면 GAME 바이너리가 WORLD 설정을 들고 뜬다. 대안(role을 ini에서만 읽기)은 이미지에 구워진 ini가 하나뿐이라 role별 컨테이너를 구분할 수 없어 성립하지 않는다.
+
+🔴 **필수 환경변수에 조용한 기본값을 두지 않는다.** `compose.yaml` 은 필수 값을 전부 `${VAR:?메시지}` 로 읽는다 — 미설정/빈 값은 경고 뒤 빈 문자열이 아니라 **변수 이름이 찍힌 에러로 즉시 실패**한다(`build` 포함). `server/.env.example` 은 비-시크릿에 동작하는 로컬 기본값을 담고 비밀번호 2개만 비워 둔다.
+
+섞으면 두 방향으로 터진다 — **시크릿이 ini를 타고 레포로 새거나**, 배포 환경이 바뀔 때마다 이미지를 다시 굽게 된다. 전자는 되돌릴 수 없는 사고이고, 후자는 컨테이너를 쓰는 이유 자체를 없앤다.
+
+🔴 **로더는 시크릿 값을 로그에 찍지 않는다.** 로드 결과를 로그로 남길 때 `.env` 계열은 **키 이름까지만** 출력하고 값은 출력하지 않는다.
 
 ---
 
@@ -332,6 +353,20 @@ I/O 스레드 풀 (asio io_context)
 
 🔴 **라이브 DB 마이그레이션 diff는 이식하지 않았다.** 원본(`project-tower`)의 db_generator는 `INFORMATION_SCHEMA`를 읽어 `ALTER` 문을 만들고 실행까지 했지만, ① 아직 실 DB가 없고 ② 공개 레포에 접속 자격 증명이 얽히면 안 된다. 남은 것은 원본 `--generate-only` 상당의 **오프라인 `schema.sql` 출력**뿐이며, 적용은 수동이다. `template.ini [db-gen]`에 접속 키가 없는 것도 같은 이유다. (마이그레이션 **자동화**는 위 "금지" 목록에도 이미 들어 있다.)
 
+### 10.2 Redis — 자리만 새긴다 (2026-08-07 확정)
+
+**Phase 1 성공 기준 6개(§2) 중 Redis를 요구하는 항목이 0개다.** FE 1개 · GAME 1개 고정 구성에서는 분산 락도 캐시 공유도 성립하지 않는다. 따라서 **C++ Redis 클라이언트 의존성을 추가하지 않는다** — `server/vcpkg.json` 은 6개 그대로다(§15.2). `compose.yaml` 에 서비스 정의만 두고 **기본 기동에서는 제외**한다(프로파일 뒤, §15.3).
+
+🔴 **가장 중요한 항목은 pub/sub 금지다.** Redis pub/sub 은 §5.2의 **WORLD ↔ WORLD 직접통신 금지** Mandate를 우회하는 통로다. 그 규칙을 "TCP로 직접 연결하지 마라"로 좁게 읽으면, 두 WORLD가 Redis 채널로 대화하는 순간 규칙은 **문자적으로는 지켜지고 의미는 완전히 파괴된다.** 그렇게 되면 Phase 3의 Relay가 들어갈 자리가 사라진다 — 이 금지는 §5.2의 파생이며, 별도 규칙이 아니다.
+
+| 역할 | 판정 | 근거 |
+|---|---|---|
+| 읽기 캐시 (전역 설정 · 랭킹 스냅샷) | 허용 | 프로세스 로컬로 못 하는 것만 |
+| 분산 락 (GAME 다중화 시 per-character lock 확장) | 허용 | §10 per-character lock의 확장선 |
+| WORLD 레지스트리 영속화 (FE 재시작 복구) | 조건부 허용 | 🔴 SoT는 계속 FE 인메모리. Redis는 복구용 사본 |
+| 세션 상태 저장소 | 보류 | FE가 세션 종단이라는 §5.1이 흐려진다 |
+| **서버 간 게임 트래픽 pub/sub** | 🔴 **금지** | §5.2 Mandate 우회 |
+
 ---
 
 ## 11. 로깅 · 예외
@@ -450,8 +485,9 @@ base64url 디코드 → JWK 파싱 → `EVP_PKEY` 변환 → RS256/ES256 서명 
 | **코어 (고정)** | 네트워크 · 세션 · strand · 스레드 모델 · ORM 엔진 · 프로토콜 프레임 · HMAC · 시퀀스 · AoI · 틱 루프 · BT 엔진 · 로깅 · 예외 가드 · 치트 · 패킷 로그 | 하지 않음 |
 | **계약 (생성)** | `pkt_generator` → 패킷/DTO · `db_generator` → 스키마/CRUD · `info_generator` → 정적 데이터 | 게임별 소스 교체 후 재생성 |
 | **게임 (교체)** | 스탯 규칙 · 전투 판정 · BT 트리 **데이터** + 커스텀 Action 노드 · 맵 데이터 | 게임마다 새로 |
+| **배포·스택 (설정)** | 소유 파일 = `server/server.ini` · `compose.yaml` · `server/.env.example`. role/포트/워커 수 · 스택 축 · 인프라 서비스 구성 — 두 소스의 경계는 **§5.4** | 게임·환경마다 값 교체 (🔴 코드 분기 없음) |
 
-**게임 교체 = CSV / `schema.json` / contracts 교체 + 재생성.**
+**게임 교체 = CSV / `schema.json` / contracts 교체 + 재생성 + ini / compose 교체.**
 
 경계가 말로만 있으면 지켜지지 않으므로 **경로를 고정한다.** 입력·출력 경로와 네임스페이스는
 `template.ini` 가 소유하고, 정규화 타입 → C++ 타입 매핑은 `tools/types.json` 의 `cpp` 열이 SoT다
@@ -477,6 +513,25 @@ base64url 디코드 → JWK 파싱 → `EVP_PKEY` 변환 → RS256/ES256 서명 
 🔴 **정직한 한계**: 프레임워크는 **2개 이상의 게임에 붙여봐야 검증된다.** 1개만 만들고 "템플릿"이라 부르면 실제로는 잘못 그은 경계가 다수 남는다. **Phase 2에서 기존 게임 1종을 이 프레임워크로 이식하는 것**이 진짜 검증이며, 그때 비로소 "템플릿"이 주장이 아니라 사실이 된다.
 
 컨벤션 자산(`.clang-format` · `.clang-tidy` · `.editorconfig` · `CMakePresets.json` · CI 워크플로 · `docs/conventions/cpp-style.md`)도 **프레임워크의 일부**다. 게임이 프레임워크를 가져가면 컨벤션 체계가 통째로 따라오고, "게임마다 스타일이 갈리는" 상황이 구조적으로 불가능해진다.
+
+**배포·스택 층 — 축은 데이터로만 기술하고 분기는 구현하지 않는다 (2026-08-07 확정).**
+"배치 파일 하나로 클라 엔진 / 인프라를 분기한다"는 **채택하지 않는다.** 근거는 셋이다.
+
+- 분기가 실제로 갈리는 대상은 `server/vcpkg.json` · `CMakePresets.json` · `compose.yaml` · `tools/types.json` 의 타입 열 · `shared/contracts` 언어 · `.env.example` 키 집합, 이렇게 **6개 파일**이다. `setup.bat` 은 그 산물을 소비할 뿐이다. 배치에 `if` 를 넣으면 이 6개 파일의 진실이 배치 안에 **복제**되고, 그 복제본에는 `gen:check` 같은 게이트가 붙지 않는다.
+- 클라 3종 × 인프라 2종 × 토폴로지 2종 = **12조합인데 게이트는 1조합만 돈다.** 나머지 11개는 조용히 썩는다.
+- 위 "정직한 한계"가 이미 답했다 — 게임 하나도 붙여보지 않은 상태에서 스택 N종 지원을 주장할 수 없다.
+
+따라서 **축은 `server.ini [stack]` 섹션에 데이터로 기술하고, 값은 현재 실측 1조합만 둔다.** 읽는 코드는 있고 `if` 는 없다.
+
+```ini
+[stack]
+client = godot        ; 축은 존재, 값은 1개
+server = cpp-asio
+db     = mysql
+cache  = none         ; redis 자리 (§10.2)
+```
+
+🔴 **승격 조건**: 실제로 **두 번째 조합이 생기고 그 조합이 CI 게이트에서 돌기 시작하는 시점**에, 이 축을 `stack_generator`(4번째 생성기)로 올린다. 조합이 1개인 동안 생성기를 먼저 만들면 §14가 경계한 "추측 기반 추상화"를 그대로 반복하는 것이다.
 
 ---
 
@@ -556,15 +611,40 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
 - C++ 멀티스테이지 Dockerfile (빌더 스테이지 + 런타임 스테이지)
 - 🔴 **Docker 레이어 캐시로 옛 바이너리가 배포되는 사고**를 경계한다 — 배포 후 버전 확인을 검증 절차에 포함한다
 
+🔴 **CD는 Phase 1 비범위다**(§3.4). 레지스트리 푸시 · 무중단 롤아웃 · 배포 자동화를 만들지 않는다. 이 절이 정하는 것은 **`compose` 로 로컬 / 단일 호스트를 띄우는 데까지**다.
+
+**compose 구성 — 프로파일로 기본 기동을 최소화한다.**
+
+| 서비스 | 프로파일 | 기동 |
+|---|---|---|
+| `mysql` | 기본 | 항상 — ORM(§10)의 유일한 필수 런타임 의존 |
+| `redis` | 프로파일 뒤 | 🔴 기본 기동 제외. 정의만 두고 쓰지 않는다(§10.2) |
+| `fe` · `game` · `world` | 프로파일 뒤 | 서버 바이너리가 생기는 시점에 켠다 |
+
+**단일 이미지 + `ATLAS_ROLE` 분기 entrypoint.** 서버 3종을 각각의 이미지로 굽지 않는다. 이미지는 하나이고, entrypoint가 `ATLAS_ROLE` 환경변수로 실행 대상을 고른다. 이것이 §5.2의 "WORLD와 InterWorld는 동일 바이너리, ini로 식별"과 정합한 배포 형태다 — 배포 단위를 role별로 쪼개면 그 명제가 이미지 층에서 깨진다.
+
+🔴 FE / GAME / WORLD 바이너리는 **아직 없다.** 그러므로 entrypoint가 지금 하는 일은 **role → 바이너리 경로 매핑과, 바이너리가 없을 때의 명확한 실패**까지다. 없는 것을 있는 척 감싸지 않는 절제이며, §10.1이 "런타임 없이 CRUD를 뽑지 않는다"로 취한 것과 같은 종류의 판단이다.
+
 ### 15.4 CI 게이트
 
 ```
-gen:check → format-check → clang-tidy → build(unity ON) → build(unity OFF) → test
+gen:check → core-purity → format-check → clang-tidy → build(unity ON) → build(unity OFF) → test
 ```
 
 🔴 **`gen:check`가 맨 앞에 온다.** "생성 출력을 직접 편집하지 않는다"는 규칙의 유일한 기계 강제다 —
 `server/generated/**`가 현재 입력(`shared/contracts` · `server/db/schema.json`)으로부터 재생성한
 결과와 다르면 여기서 멈춘다. 문서로만 있으면 반드시 손으로 고친 생성물이 커밋된다.
+
+🔴 **`core-purity` 가 그 바로 뒤에 온다 — "코어가 게임을 알면 안 된다"의 기계 강제다.**
+§14는 코어(고정) / 계약(생성) / 게임(교체) 층을 선언하지만, 지금까지 그 경계를 강제하는 것이
+**아무것도 없었다.** `gen:check` 가 생성물 손편집에 대해 하는 일을, 이 단계가 코어 오염에 대해 한다.
+검사 2가지다.
+
+- `server/atlas/**` 가 `server/generated/**` 의 **게임 계약 헤더를 include 하지 않는다**
+- `server/atlas/**` 에 `tools/core_purity/denylist.txt` 의 용어(§3.3 데모 게임 어휘)가 **0건**
+
+🔴 denylist는 고정 목록이 아니다 — **데모 게임이 자라면 denylist도 같이 자란다.** §3.3에 항목을
+추가할 때 그 어휘를 denylist에 넣지 않으면, 이 게이트는 조용히 낡은 어휘만 지키는 껍데기가 된다.
 
 구현: `server/scripts/ci-gate.ps1` (git remote가 붙기 전까지 **이것이 실질 게이트**) 와
 `.github/workflows/ci.yml` (Linux 전사본, 아직 미검증).
@@ -581,6 +661,56 @@ PCH만 빼면 같은 호출이 `--warnings-as-errors=*` 에서 exit 0 이므로 
 게이트가 거짓 신호를 준다. 해소 조건은 로컬 clang-cl 도입(§15.1 툴체인)이며, 그 전까지
 네이밍·`bugprone`·`modernize` 강제는 `linux-ci` 에서만 성립한다. 상세는 `cpp-style.md §7.3`.
 
+### 15.5 CI 인프라 — vcpkg 바이너리 캐시 (2026-08-07 실측)
+
+첫 CI 런(run 31142102019)이 **실패**했고, 재실행도 **실패**했다. 둘 다 `configure` 단계이며 원인은
+레포 버그가 아니라 **업스트림 아카이브 장애**다. 🔴 두 런이 **서로 다른 포트에서 죽었다** — 일시적
+장애가 아니라 구조 문제라는 증거다.
+
+1회차:
+```
+error: download from .../ncurses-6.5.tar.gz had an unexpected hash
+error: curl operation failed with response code 500.
+error: Reached maximum number of attempts, won't retry download from
+       https://github.com/boostorg/polygon/archive/boost-1.91.0.tar.gz
+error: building boost-polygon:x64-linux failed with: BUILD_FAILED
+```
+2회차(같은 워크플로, 다른 포트):
+```
+error: Reached maximum number of attempts, won't retry download from
+       https://github.com/boostorg/core/archive/boost-1.91.0.tar.gz
+error: building boost-core:x64-linux failed with: BUILD_FAILED
+```
+
+의존성 트리 실측(`vcpkg depend-info <port> --format=list`, 로컬 vcpkg — 🔴 출력은 stderr로 나온다):
+
+| 포트 | 의존 포트 수 |
+|---|---|
+| **`libmysql`** | **92** ← Boost 트리 전체 + `ncurses` 를 여기서 끌고 온다 |
+| `boost-beast` | 60 |
+| `boost-asio` | 55 (beast는 asio 대비 +5뿐) |
+| `libmariadb` | 4 |
+| `openssl` · `spdlog` | 각 4 |
+| `gtest` | 3 |
+
+🔴 CI 로그의 `boost-polygon` · `boost-bimap` · `ncurses` 는 **전부 `libmysql` 경유**다. `boost-beast`
+는 원인이 아니다.
+
+구조 문제는 셋이다.
+1. 합집합 ~100개 포트를 **매 런 소스 빌드**한다
+2. `actions/cache` 로 `~/.cache/vcpkg/archives` 를 감싸는 방식은 첫 런 미스 + 실패 종료로 캐시가
+   차지 않았다 → vcpkg **GHA 바이너리 캐시**(`VCPKG_BINARY_SOURCES=clear;x-gha,readwrite`)로 전환한다
+3. 소스 ~100개 중 하나만 500을 뱉으면 게이트 전체가 죽는다 — **재시도 계층이 없다**
+
+**확정 (2026-08-07): 캐시 전환 + `configure` 재시도만 한다.** `server/vcpkg.json` 은 **수정하지
+않는다**(6개 유지, §15.2).
+
+🔴 `libmysql` → `libmariadb` 교체는 **채택하지 않았다.** 포트가 ~100 → ~62로 줄지만 `boost-asio` 의
+55개가 그대로 남아 `boostorg` 500 위험은 사라지지 않고, 캐시가 워밍되면 그 이득은 두 번째 런부터
+0이 된다. DB 클라이언트 라이브러리 교체와 교환하기에는 비율이 나쁘다. 다만 **ORM 런타임 노드 착수
+전에 별건으로 재검토할 항목**으로 §16 미결 표에 남긴다(빌드 시간 · 런타임 이미지 크기 · `ncurses`
+불안정 미러 제거가 근거).
+
 ---
 
 ## 16. 미결 사항
@@ -591,10 +721,11 @@ PCH만 빼면 같은 호출이 `--warnings-as-errors=*` 에서 exit 0 이므로 
 |---|---|
 | p95 틱 처리 시간 · 대역폭 목표치 | 1차 부하 측정 후 역산 |
 | PC 클라이언트 배포처 | Phase 3 |
-| 게임 타이틀 · 공개 레포명 | Phase 1 후반 (레포명은 포트폴리오 검색성에 영향 — 코드네임보다 서술형이 유리) |
+| 게임 타이틀 | Phase 1 후반 (공개 레포명은 `project-atlas`로 확정됐다 — §2. 타이틀은 레포명과 별개 항목이다) |
 | HMAC vs AEAD 최종 선택 | 프로토콜 구현 착수 시 (성능 측정 포함) |
 | WORLD 틱 레이트 | 데모 게임 조작감 확인 후 |
 | 세마포어 적용 지점 | Phase 2 (Admin HTTP 계층) |
+| `libmysql` → `libmariadb` 교체 여부 | ORM 런타임 노드 착수 시 (§15.5 근거: 의존 포트 92 → 4, `ncurses` 불안정 미러 제거) |
 
 ---
 
