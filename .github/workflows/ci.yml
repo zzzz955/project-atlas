@@ -111,14 +111,28 @@ jobs:
 
       # clang-tidy's ExcludeHeaderFilterRegex (used by .clang-tidy to skip generated/) requires
       # clang-tidy >= 19 - below that the key is silently ignored. cpp-style.md §7.1.
+      #
+      # 🔴 The LLVM tools come from apt.llvm.org, NOT from noble-updates. noble ships 19.1.1, which
+      # measures ColumnLimit in BYTES when it aligns trailing comments; 19.1.5+ measures display
+      # columns. A comment carrying "§" or "—" is therefore legal under the 19.1.5 that VS 2022
+      # ships locally and illegal under 19.1.1 here - format-check was the only step that could
+      # disagree with a green local gate. Pinning the major version alone was not enough. §15.5f.
       - name: install toolchain
         if: steps.scope.outputs.cpp == 'true'
         run: |
+          set -eu
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm-19.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build clang-format-19 clang-tidy-19 \
             pkg-config curl zip unzip tar
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
+          # 🔴 Printed on purpose: the next version-skew failure has to be readable from the log.
+          clang-format --version
+          clang-tidy --version | head -n 2
 
       # The cache key has to change when the port set changes AND when the port tree changes.
       # vcpkg.json carries both: the dependency list and the builtin-baseline SHA that pins the tree.

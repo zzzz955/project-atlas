@@ -15,7 +15,7 @@ namespace atlas {
 enum class FrameError : UInt8 {
     None = 0,
     PayloadTooLarge,     // declared length above kMaxPayload
-    ChecksumMismatch,    // §8.1 crc32 disagrees — framing desynchronised or the bytes are corrupt
+    ChecksumMismatch,    // §8.1 crc32 disagrees — framing desynchronised or bytes are corrupt
     SequenceRegression,  // §8.3 seq went backwards or repeated
 };
 
