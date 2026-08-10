@@ -8,7 +8,7 @@
 #   ATLAS_ROLE   binary             note
 #   ----------   ----------------   ---------------------------------------------------------
 #   fe           /app/atlas_fe      후속 슬라이스 (아직 이미지에 없음)
-#   game         /app/atlas_game    후속 슬라이스
+#   game         /app/atlas_game    ✅ 실재한다 (server/game/ · 도메인 모델 + 원자적 장착)
 #   world        /app/atlas_world   후속 슬라이스
 #   interworld   /app/atlas_world   🔴 world 와 **같은 바이너리**(§5.2). InterWorld 는 신규 서버가
 #                                   아니라 ini 설정 변형이므로 이미지도 실행 파일도 쪼개지 않는다.
@@ -16,6 +16,9 @@
 # 🔴 기본 role 은 없다. ATLAS_ROLE 미설정은 명시적 실패다 — 엉뚱한 서버로 조용히 뜨는 것이
 #    기동 실패보다 나쁘다.
 # 🔴 바이너리가 아직 없는 role 도 명시적 실패다(§15.3). 없는 것을 있는 척 감싸지 않는다.
+#    game 이 실재하게 됐다고 fe/world 를 "곧 나온다"로 감싸지 않는다 — 아래 -x 검사는 그대로다.
+#    🔴 이 파일이 role 을 바이너리로 고르고, 런타임 정체성은 server.ini `[server] role` 이다.
+#    두 값이 어긋나면 atlas_game 이 exit 64 로 죽는다(game/main.cpp) — §5.4 의 그 경계다.
 set -eu
 
 # 🔴 §15.3: Docker 레이어 캐시는 어제 바이너리를 태연히 배포한다. 그래서 컨테이너는 무슨 일을
@@ -50,7 +53,7 @@ esac
 
 if [ ! -x "${ATLAS_BIN}" ]; then
     echo "[entrypoint] role '${ATLAS_ROLE}' maps to ${ATLAS_BIN}, which is not in this image yet." >&2
-    echo "             FE/GAME/WORLD binaries land in a later slice (architecture-design.md §15.3)." >&2
+    echo "             GAME exists; FE and WORLD land in a later slice (architecture-design.md §15.3)." >&2
     exit 69
 fi
 
