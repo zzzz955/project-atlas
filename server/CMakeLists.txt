@@ -18,5 +18,19 @@ enable_testing()
 add_subdirectory(atlas/core)
 add_subdirectory(atlas/config)
 add_subdirectory(atlas/net)
+# architecture-design.md §8.1 — the frame layer sits above atlas/net and links it, never the reverse
+# (see atlas/proto/CMakeLists.txt), so it is added after it.
+add_subdirectory(atlas/proto)
+# architecture-design.md §10 — the ORM runtime. Independent of atlas/net: the DB thread pool is
+# deliberately not an io_context worker pool (§9), and the completion executor reaches it
+# type-erased, so this layer links no asio.
+add_subdirectory(atlas/db)
 add_subdirectory(generated)
+# architecture-design.md §14 — the game layer, and §15.4 is why it is not a subdirectory of atlas/:
+# the core-purity gate fails the build if `item` / `inventory` / `equip` appear under server/atlas/**.
+# It is added last because it links everything above it and nothing above it links back.
+add_subdirectory(game)
+# architecture-design.md §16.1 — the load harness. A client of the game above, so it is added after
+# it; nothing links back to it.
+add_subdirectory(loadgen)
 add_subdirectory(tests)
