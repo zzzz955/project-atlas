@@ -756,10 +756,19 @@ base64url 디코드 → JWK 파싱 → `EVP_PKEY` 변환 → RS256/ES256 서명 
 client = godot        ; 축은 존재, 값은 1개
 server = cpp-asio
 db     = mysql
-cache  = none         ; redis 자리 (§10.2)
+cache  = redis        ; §10.2 (2026-08-11: none → redis)
 ```
 
 🔴 **승격 조건**: 실제로 **두 번째 조합이 생기고 그 조합이 CI 게이트에서 돌기 시작하는 시점**에, 이 축을 `stack_generator`(4번째 생성기)로 올린다. 조합이 1개인 동안 생성기를 먼저 만들면 §14가 경계한 "추측 기반 추상화"를 그대로 반복하는 것이다.
+
+**판정: 승격하지 않는다 (2026-08-11, `cache = none → redis` 착지 시점에 판정).**
+`cache` 축이 처음으로 두 번째 *값*을 갖게 됐으므로 승격 조건에 걸리는지 명시적으로 따졌다. 걸리지 않는다. 근거 셋이며, **셋 다 아니어야** 통과이므로 하나만 무너져도 판정은 유지된다.
+
+- **두 번째 값 ≠ 두 번째 조합.** 위 조건이 세는 단위는 값이 아니라 조합(클라 3 × 인프라 2 × 토폴로지 2 = 12)이다. `none` 은 **폐기됐고 유지되지 않는다** — 이 레포가 동시에 지원하는 조합 수는 여전히 **1개**(godot × cpp-asio × mysql × redis)다. 값을 하나 **덮어쓴 것**은 축을 늘린 것이 아니다.
+- **새 값이 게이트에서 돌지 않는다.** `ci.yml` 에는 Redis 서비스가 없다(이 변경도 붙이지 않았다). `cache` 축은 §15.4 의 DB 축과 **동일한 취급** — 로컬에서만 검증된다. 조건의 후반절("CI 게이트에서 돌기 시작")이 아예 성립하지 않는다.
+- **분기가 아직 0개다.** 승격이 사는 이유는 `if` 를 데이터로 바꾸는 것인데, 지금 읽는 코드에는 갈릴 분기가 없다. 조합 1개짜리 생성기는 §14 가 경계한 "추측 기반 추상화" 그 자체다.
+
+🔴 이 판정이 남기는 **조건의 정밀화**: 승격 트리거는 "축의 값이 바뀐다"가 아니라 **"두 조합이 동시에 지원되고, 둘 다 게이트가 돈다"**이다. 값 교체마다 판정을 다시 하면 축이 자랄 때마다 같은 논쟁을 반복하게 되므로, 다음 판정은 **두 번째 조합이 실제로 커밋되는 변경**에서만 한다.
 
 ---
 
@@ -804,12 +813,29 @@ dev(Windows)와 prod(Linux)가 서로 다른 소켓 구현을 쓰게 되는 조�
 
 ### 15.2 의존성 — vcpkg manifest 모드
 
-의존성은 3개다: **Boost(asio/beast) · OpenSSL · MySQL client** (+ spdlog, gtest).
+의존성은 7개다: **Boost(asio/beast/redis) · OpenSSL · MySQL client** (+ spdlog, gtest).
 
 ```json
-{ "dependencies": ["boost-asio","boost-beast","openssl","libmariadb","spdlog","gtest"],
+{ "dependencies": ["boost-asio","boost-beast","boost-redis","openssl","libmariadb","spdlog","gtest"],
   "builtin-baseline": "eaca4a577b6b678c6e10252754b6988a61746c19" }
 ```
+
+🔴 **Redis 클라이언트 = `boost-redis` (2026-08-11 추가, 캐시 축 착지).** §10.2 가 "자리만 새긴다"로
+미뤄 뒀던 C++ 클라이언트가 여기서 실재가 된다. 선택 근거는 **스레드 모델 정합** 하나다.
+
+- `boost-redis` 는 **asio-native** 다. 기존 `io_context` / 세션 strand(§9 · §9.1) 위에 그대로
+  얹히고, 별도 실행 컨텍스트를 만들지 않는다
+- 🔴 그래서 **§10.3 의 DB 스레드 풀 같은 격리 장치가 필요 없다.** `libmariadb` 가 그 풀을 요구한
+  이유는 블로킹 C API 라서 IO 스레드에서 호출하면 세션 전체가 멈추기 때문이었다. asio 완료 토큰
+  기반 클라이언트에는 그 문제가 없다
+- 대안이던 `redis-plus-plus` 는 hiredis 동기 API 기반이라 **그 격리 장치를 하나 더 만들어야
+  했다** — 같은 구조의 두 번째 스레드 풀은 이 프로젝트가 §9.1 로 피하려던 바로 그 형태다
+- header-only 라 CI 콜드 빌드 증분이 작다(§15.5b 가 실측한 대로 이 레포의 바이너리 캐시는
+  이제서야 동작하기 시작했고, 새 포트의 콜드 비용은 여전히 실측 대상이다)
+
+🔴 **`builtin-baseline` 은 건드리지 않았다.** 핀된 `eaca4a5…` 에 포트가 존재하는 것을 먼저
+확인했다 — `boost-redis:x64-windows@1.91.0`, `cmake --preset windows-debug` 실측(2026-08-11).
+baseline 을 올렸다면 전 의존성이 재해석되므로, 그것은 이 변경의 범위가 아니었다.
 
 🔴 **MySQL client = `libmariadb`다(2026-08-10 교체, 근거 §15.5).** MariaDB Connector/C 는 MySQL
 와이어 프로토콜과 C API(`mysql.h`) 양쪽 호환이므로 **접속 대상 서버는 여전히 MySQL이고**(§15.3
@@ -898,7 +924,7 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
 | 서비스 | 프로파일 | 기동 |
 |---|---|---|
 | `mysql` | 기본 | 항상 — ORM(§10)의 유일한 필수 런타임 의존 |
-| `redis` | 프로파일 뒤 | 🔴 기본 기동 제외. 정의만 두고 쓰지 않는다(§10.2) |
+| `redis` | 기본 | 항상 (2026-08-11 변경) — `boost-redis` 착지로 자리 표시가 아니라 실제 의존이 됐다(§15.2). 🔴 프로파일 뒤에 남기면 `up -d` 로 뜬 스택이 서버 기동에 못 미치고, 그 차이는 접속 실패로만 드러난다 |
 | `fe` · `game` · `world` | 프로파일 뒤 | 서버 바이너리가 생기는 시점에 켠다 |
 
 **단일 이미지 + `ATLAS_ROLE` 분기 entrypoint.** 서버 3종을 각각의 이미지로 굽지 않는다. 이미지는 하나이고, entrypoint가 `ATLAS_ROLE` 환경변수로 실행 대상을 고른다. 이것이 §5.2의 "WORLD와 InterWorld는 동일 바이너리, ini로 식별"과 정합한 배포 형태다 — 배포 단위를 role별로 쪼개면 그 명제가 이미지 층에서 깨진다.

@@ -6,6 +6,7 @@
   "dependencies": [
     "boost-asio",
     "boost-beast",
+    "boost-redis",
     "openssl",
     "libmariadb",
     "spdlog",

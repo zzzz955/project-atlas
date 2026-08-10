@@ -60,7 +60,7 @@ TEST(ConfigServerIni, StackAxisIsReadAsData) {
     EXPECT_EQ(config.stack.client, "godot");
     EXPECT_EQ(config.stack.server, "cpp-asio");
     EXPECT_EQ(config.stack.db, "mysql");
-    EXPECT_EQ(config.stack.cache, "none");
+    EXPECT_EQ(config.stack.cache, "redis");
 }
 
 // §5.2 — every role the topology defines has to survive the round trip, or the "same binary,

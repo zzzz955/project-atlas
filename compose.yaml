@@ -13,8 +13,7 @@
 #
 # 🔴 `${...}` 치환은 compose **프로젝트 env-file** 에서 온다. 서비스의 `env_file:` 은 컨테이너에
 #    변수를 주입할 뿐 치환에는 쓰이지 않는다. 그래서 실제 기동은 항상 아래 형태다:
-#      docker compose --env-file server/.env up -d                    # mysql 만
-#      docker compose --env-file server/.env --profile cache up -d    # + redis
+#      docker compose --env-file server/.env up -d                    # mysql + redis
 #      docker compose --env-file server/.env --profile app  up -d     # + server (바이너리 생긴 뒤)
 
 services:
@@ -46,15 +45,13 @@ services:
       retries: 20
       start_period: 30s
 
-  # 🔴 기본 기동에서 제외 — 정의만 두고 쓰지 않는다(§10.2).
-  #    Phase 1 성공 기준 6개(§2) 중 Redis 를 요구하는 항목이 0개이고, FE 1 · GAME 1 고정 구성에서는
-  #    분산 락도 캐시 공유도 성립하지 않는다. 그래서 server/vcpkg.json 에 C++ Redis 클라이언트를
-  #    추가하지 않는다(§15.2) — 여기 있는 것은 자리 표시이지 의존성이 아니다.
+  # 기본 기동 대상. 자리 표시가 아니라 실제 런타임 의존이 됐다 — server/vcpkg.json 이 `boost-redis`
+  # 를 들고(§15.2), 서버가 이 인스턴스에 실제로 붙는다. 프로파일 뒤에 두면 `up -d` 로 뜬 스택이
+  # 서버 기동에 못 미치는 상태가 되고, 그 차이는 접속 실패로만 드러난다.
   # 🔴 §10.2 허용 역할표(읽기 캐시 · 분산 락 · WORLD 레지스트리 복구 사본) 밖의 용도로 쓰지 않는다.
   #    특히 **서버 간 게임 트래픽 pub/sub 은 금지**다. 그것은 §5.2 "WORLD ↔ WORLD 직접통신 금지"를
   #    문자적으로만 지키면서 의미를 파괴하는 우회로이고, Phase 3 Relay 가 들어갈 자리를 없앤다.
   redis:
-    profiles: [cache]
     image: redis:7-alpine
     restart: unless-stopped
     ports:

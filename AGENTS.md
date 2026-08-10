@@ -104,7 +104,7 @@ server/character selection = GAME.
 ## Build
 CMake root is `server/` (also the include root — `#include "atlas/core/types.h"`). Ninja generator
 only: the VS generator emits no `compile_commands.json` and clang-tidy needs it. vcpkg manifest
-(`server/vcpkg.json`, 6 deps, `builtin-baseline` pinned by `setup.bat`) + PCH + unity build.
+(`server/vcpkg.json`, 7 deps, `builtin-baseline` pinned by `setup.bat`) + PCH + unity build.
 
 | command | what |
 |---|---|
