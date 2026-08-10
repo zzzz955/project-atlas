@@ -15,12 +15,12 @@
 # ---------------------------------------------------------------------------- builder
 FROM ubuntu:24.04 AS builder
 
-# 🔴 libtirpc-dev / libncurses-dev 는 vcpkg `libmysql` 포트의 시스템 전제조건이다. 없으면 configure
-# 가 `Package 'libtirpc', required by 'virtual:world', not found` (cmake/rpc.cmake) 로 죽는다.
-# ubuntu:24.04 는 둘 다 기본 포함하지 않는다.
+# 🔴 libtirpc-dev / libncurses-dev 는 여기 없다. 그 둘은 vcpkg `libmysql` 포트의 시스템
+# 전제조건이었고, §15.5(2026-08-10)에서 DB 클라이언트를 `libmariadb` 로 교체하면서 사라졌다 —
+# libmariadb 는 Sun RPC 도 ncurses 도 요구하지 않는다. 되살리지 않는다: 안 쓰는 시스템 패키지는
+# 빌더 레이어를 키우고, 왜 있는지 아무도 모르는 줄이 된다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git curl zip unzip tar pkg-config ca-certificates \
-        libtirpc-dev libncurses-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src

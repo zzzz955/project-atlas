@@ -3,9 +3,14 @@
 #   run 31142102019 : failed at `configure` - github.com/boostorg/polygon 500 + an ncurses hash
 #                     mismatch, both pulled in by libmysql (92 transitive ports)
 #   re-run          : failed at `configure` again, at a DIFFERENT port (boostorg/core 500)
-# Two different ports failing is the evidence that this is structural (~100 ports source-built every
-# run, no binary cache, no retry layer), not a flake. This revision fixes the cache and the retry;
-# 🔴 server/vcpkg.json is deliberately untouched (6 deps, §15.2).
+#   run 31153396554 : failed at `configure` a THIRD time, and this one was NOT a flake -
+#                     `Could not find rpc/rpc.h` (libmysql's cmake/rpc.cmake). ubuntu-24.04 dropped
+#                     the Sun RPC headers from glibc; libmysql needs libtirpc-dev.
+#                     🔴 server/Dockerfile already installed libtirpc-dev and said why - this file
+#                     never learned it. The two Linux build recipes had drifted.
+# Three failures, three different causes, one common source: libmysql. §15.5 (2026-08-10) therefore
+# swaps the DB client to `libmariadb` (92 transitive ports -> 4) instead of papering over the
+# symptom with one more apt package. Dep count is still 6 (§15.2).
 #
 # Everything after `configure` - format-check, clang-tidy, the two builds, ctest - has still never
 # executed on a runner. `server/scripts/ci-gate.ps1` remains the gate that is actually exercised.

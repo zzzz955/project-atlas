@@ -214,6 +214,34 @@ AoI 그리드는 **Actor 단위**로 동작한다. 따라서 브로드캐스트 
 
 고정 헤더를 최소화한다. 길이 · opcode · 시퀀스 + 무결성 필드.
 
+#### 헤더 폭 확정 (2026-08-10, portfolio-slice T2)
+
+🔴 이 표가 SoT다. `§8.5` DTO 와이어 포맷이 **페이로드 내부**를 정하고, 이 표가 **페이로드 바깥**을
+정한다. 둘은 같은 LE 규약을 쓴다.
+
+```
+ 0        2        4                8               12
+ +--------+--------+----------------+----------------+
+ | length | opcode |      seq       |     crc32      |  payload (length bytes) ...
+ +--------+--------+----------------+----------------+
+   UInt16   UInt16      UInt32           UInt32
+```
+
+| 필드 | 폭 | 의미 |
+|---|---|---|
+| `length` | `UInt16` LE | **페이로드 바이트 수. 헤더는 세지 않는다** |
+| `opcode` | `UInt16` LE | 계약이 정하는 메시지 식별자 |
+| `seq` | `UInt32` LE | 세션별 송신/수신 각각 유지(`§8.3`). 역행·중복은 **연결 종료** |
+| `crc32` | `UInt32` LE | `opcode + seq + payload` 에 대해 계산 |
+
+- **고정 헤더 12바이트.** 엔디언은 `§8.5` 리틀엔디언 고정 그대로다
+- 🔴 **`crc32` 는 프레이밍 무결성 전용이다** — `§8.2` 1층. 변조를 막지 못하고, 막는 척해서도 안
+  된다. 이 한계는 코드 주석과 외부 문서 양쪽에 명시한다
+- 🔴 **HMAC 8바이트 필드는 지금 넣지 않는다.** `§8.2` 2층은 세션키 수립을 요구하고 그것은
+  `§12` platform-auth JWT 연동을 끌고 들어온다. **필드만 만들고 0으로 채우면 "있는 척"이 된다.**
+  클라이언트가 아직 없으므로 헤더를 12 → 20바이트로 넓히는 비용은 **현재 0**이고, 그 사실을
+  문서에 적는 쪽이 자리를 비워두는 것보다 정직하다. `§16` 미결 항목은 그대로 열려 있다
+
 ### 8.2 무결성 3층 — 🔴 각 층의 역할을 혼동하지 않는다
 
 | 층 | 수단 | 막는 것 | 못 막는 것 |
@@ -295,8 +323,11 @@ I/O 스레드 풀 (asio io_context)
   join한다 — 의도된 경로가 아니며 Stop()과 의미가 반대다.
 - **쓰기 큐 정책 = 세션 strand 위의 FIFO `deque<vector<Byte>>`, `async_write` 1개만 in-flight,**
   완료 핸들러가 다음 항목을 시작한다. 페이로드는 `Send()` 시점에 복사한다(호출자가 임시 버퍼를
-  넘길 수 있다). 🔴 **상한은 두지 않았다** — 백프레셔 상한은 "메시지 1건"이 정의돼야 의미가 있고,
-  메시지는 프레임 계층(§8)이 생기기 전까지 존재하지 않는다. 그 슬라이스에서 함께 정한다.
+  넘길 수 있다). ~~🔴 **상한은 두지 않았다**~~ — 백프레셔 상한은 "메시지 1건"이 정의돼야 의미가
+  있고, 메시지는 프레임 계층(§8)이 생기기 전까지 존재하지 않았다.
+  **해소 (2026-08-10, §8.1 헤더 확정과 동시)**: 페이로드 상한 `kMaxPayload = 16 KiB`, 세션 쓰기 큐
+  상한 `kMaxWriteQueueBytes = 1 MiB`. 🔴 **초과는 연결 종료**이며 조용한 드롭이 아니다 — 드롭은
+  프로토콜을 조용히 깨뜨리고, 그 증상은 며칠 뒤 엉뚱한 곳에서 나타난다.
 - 🔴 **`IoRunner` 워커는 `io_context::run()`을 try/catch로 감싸지 않는다.** 모든 핸들러 진입점이
   이미 `Guarded`를 통과하므로(§11.2b), 여기까지 예외가 올라온다는 것은 **가드가 빠진 핸들러가
   있다는 뜻**이다. 여기서 잡아 워커를 재시작하면 가드가 막으려던 결함을 정확히 그 형태로 숨긴다.
@@ -579,9 +610,13 @@ dev(Windows)와 prod(Linux)가 서로 다른 소켓 구현을 쓰게 되는 조�
 의존성은 3개다: **Boost(asio/beast) · OpenSSL · MySQL client** (+ spdlog, gtest).
 
 ```json
-{ "dependencies": ["boost-asio","boost-beast","openssl","libmysql","spdlog","gtest"],
+{ "dependencies": ["boost-asio","boost-beast","openssl","libmariadb","spdlog","gtest"],
   "builtin-baseline": "eaca4a577b6b678c6e10252754b6988a61746c19" }
 ```
+
+🔴 **MySQL client = `libmariadb`다(2026-08-10 교체, 근거 §15.5).** MariaDB Connector/C 는 MySQL
+와이어 프로토콜과 C API(`mysql.h`) 양쪽 호환이므로 **접속 대상 서버는 여전히 MySQL이고**(§15.3
+compose의 `mysql` 서비스는 그대로다), 바뀐 것은 클라이언트 라이브러리 하나뿐이다.
 
 - **`gtest`** — 테스트 프레임워크는 GoogleTest로 확정(2026-08-06). `gtest_discover_tests`로 §15.4의
   `test` 단계가 ctest에 결선된다.
@@ -589,7 +624,11 @@ dev(Windows)와 prod(Linux)가 서로 다른 소켓 구현을 쓰게 되는 조�
   `server/setup.bat`이 vcpkg를 클론한 직후 `git rev-parse HEAD`의 실측값을 써 넣는다
   (`server/scripts/set-vcpkg-baseline.ps1`). 지어낸 SHA는 재현성의 반대다.
   위 값은 그렇게 채워진 실측 SHA다(2026-08-06 최초 `setup.bat` 실행 결과). 이 baseline에서
-  해석된 포트 버전: Boost 1.91.0 · OpenSSL 3.6.3 · libmysql 8.0.46 · spdlog 1.17.0 · gtest 1.17.0.
+  해석된 포트 버전: Boost 1.91.0 · OpenSSL 3.6.3 · spdlog 1.17.0 · gtest 1.17.0 ·
+  **libmariadb 3.4.8** (`libmariadb[core,iconv]:x64-windows@3.4.8` — 2026-08-10 교체 후
+  `cmake --preset windows-debug` 실측. 🔴 `libmysql` 8.0.46 이 이 자리에 있었다).
+  CMake 소비 형태도 바뀐다: `find_package(unofficial-libmariadb CONFIG REQUIRED)` →
+  `unofficial::libmariadb`.
   갱신은 vcpkg를 fetch 한 뒤 같은 스크립트를 다시 돌려서 하고, 손으로 고치지 않는다.
 
 - **baseline SHA 고정** → 재현 가능. classic 모드(전역 설치)의 "어제는 됐는데" 문제가 사라진다
@@ -711,6 +750,67 @@ error: building boost-core:x64-linux failed with: BUILD_FAILED
 전에 별건으로 재검토할 항목**으로 §16 미결 표에 남긴다(빌드 시간 · 런타임 이미지 크기 · `ncurses`
 불안정 미러 제거가 근거).
 
+#### 15.5a 3차 실패와 결정 번복 — `libmariadb` 교체 (2026-08-10 확정)
+
+위 확정을 적용한 런(31153396554, 커밋 `9529f1d`)도 `configure` 에서 **3/3 실패**했다. 🔴 이번 실패는
+**플레이크가 아니다** — 재시도해도 같은 자리에서 같은 이유로 죽는 결정적 실패다.
+
+```
+CMake Error at cmake/rpc.cmake:113 (MESSAGE):
+  Could not find rpc/rpc.h in /usr/include or /usr/include/tirpc
+Call Stack (most recent call first):
+  CMakeLists.txt:2093 (MYSQL_CHECK_RPC)
+-- Running vcpkg install - failed
+```
+
+ubuntu-24.04 는 glibc에서 Sun RPC 헤더를 제거했고, `libmysql` 은 그것을 요구한다. 필요한 것은
+`libtirpc-dev` 다.
+
+🔴 **그런데 이 사실은 이미 레포 안에 있었다.** `server/Dockerfile` 은 `libtirpc-dev libncurses-dev`
+를 설치하면서 *바로 그 에러 메시지를* 주석으로 적어두고 있었다. `.github/workflows/ci.yml` 만
+몰랐다. **같은 플랫폼을 빌드하는 두 레시피가 갈라져 있었던 것**이 진짜 결함이고, 이런 종류의 분기는
+DB 클라이언트가 시스템 전제조건을 요구하는 한 계속 재발한다.
+
+**세 번의 실패, 세 가지 원인, 하나의 공통 출처(`libmysql`):**
+
+| 런 | 죽은 지점 | 성격 |
+|---|---|---|
+| 31142102019 | `boost-polygon` 500 + `ncurses` 해시 불일치 | 업스트림 플레이크 — 둘 다 `libmysql` 경유 |
+| (재실행) | `boost-core` 500 | 업스트림 플레이크 — `libmysql` 경유 |
+| 31153396554 | `rpc/rpc.h` 없음 | **결정적** — `libmysql` 자체의 시스템 전제조건 |
+
+🔴 **2026-08-07의 판단을 뒤집는다.** 당시 근거("이득이 캐시 워밍 후 0이 된다")는 실패가 *업스트림
+다운로드 플레이크뿐*이라는 전제 위에 있었다. 3차 실패가 그 전제를 깼다 — 캐시는 시스템 전제조건
+누락을 고쳐주지 않는다. 92개 포트를 끌고 오는 의존성은 표면적이 넓고, 그 표면적이 세 번 연속으로
+게이트를 죽였다.
+
+**확정: `libmysql` → `libmariadb`.** 의존 포트 92 → 4. 근거 4가지:
+
+1. **결정적 실패의 제거** — `libmariadb` 는 Sun RPC 도 `ncurses` 도 요구하지 않는다. `libtirpc-dev`
+   를 한 줄 더 붙이는 것은 증상만 덮는 것이고, 다음 시스템 전제조건에서 같은 사고가 반복된다
+2. **`ncurses` 불안정 미러가 의존 그래프에서 사라진다** — 1차 실패의 해시 불일치 출처
+3. **와이어 호환** — MariaDB Connector/C 는 MySQL 서버에 그대로 붙는다. §15.3 compose의 `mysql`
+   서비스도, §10의 ORM 설계도, `db/schema.json` 도 바뀌지 않는다. 바뀌는 것은 링크되는 .so 하나다
+4. **지금이 §16이 지정한 그 시점이다** — 미결 표는 이 항목의 판단 시점을 "ORM 런타임 노드 착수 시"로
+   적어뒀고, ORM 런타임 노드가 지금 착수된다
+
+🔴 **`boost-asio` 의 55개 포트는 여전히 남는다.** 이 교체는 `boostorg` 500 위험을 없애지 않는다 —
+그 위험에 대한 대응은 §15.5의 GHA 바이너리 캐시 + `configure` 재시도이며, 그 둘은 유지된다. 이
+절이 없애는 것은 **`libmysql` 고유의 표면적**이지 업스트림 장애 일반이 아니다. 과대평가하지 않는다.
+
+동반 변경: `server/Dockerfile` 에서 `libtirpc-dev libncurses-dev` 를 제거한다(존재 이유가
+`libmysql` 하나였다). `server/vcpkg.json` 의 의존성 개수는 6개 그대로다.
+
+**로컬 실측 (2026-08-10, `cmake --preset windows-debug`)**: `configure` 성공.
+`libmariadb[core,iconv]:x64-windows@3.4.8` 설치에 **21초** — `libmysql` 의 92포트 소스 빌드와
+같은 자리다. `-- Configuring done (33.6s)`.
+
+🔴 **그러나 CI 는 아직 검증되지 않았다.** 위 실측은 Windows 로컬이고, 실패한 것은 Linux 러너다.
+그리고 `configure` 이후 단계(format-check · clang-tidy · build ×2 · test)는 러너에서 **한 번도
+실행된 적이 없다**. 이 교체가 `configure` 를 통과시키더라도 그 뒤에서 처음 드러나는 실패가 남아
+있을 수 있다. 초록 런 id 를 여기 적기 전까지 이 절은 "고쳤다"가 아니라 **"원인을 제거하고 다음
+실패를 노출시키기로 했다"**이다.
+
 ---
 
 ## 16. 미결 사항
@@ -722,10 +822,10 @@ error: building boost-core:x64-linux failed with: BUILD_FAILED
 | p95 틱 처리 시간 · 대역폭 목표치 | 1차 부하 측정 후 역산 |
 | PC 클라이언트 배포처 | Phase 3 |
 | 게임 타이틀 | Phase 1 후반 (공개 레포명은 `project-atlas`로 확정됐다 — §2. 타이틀은 레포명과 별개 항목이다) |
-| HMAC vs AEAD 최종 선택 | 프로토콜 구현 착수 시 (성능 측정 포함) |
+| HMAC vs AEAD 최종 선택 | **여전히 열려 있다.** §8.1 이 헤더를 12바이트로 확정하면서 무결성 2층 필드를 **의도적으로 넣지 않았다**(자리만 잡는 것을 거부). 클라이언트가 없는 동안 헤더 확장 비용은 0이므로, 정할 시점은 §12 platform-auth 연동으로 세션키가 실재하게 되는 때다 |
 | WORLD 틱 레이트 | 데모 게임 조작감 확인 후 |
 | 세마포어 적용 지점 | Phase 2 (Admin HTTP 계층) |
-| `libmysql` → `libmariadb` 교체 여부 | ORM 런타임 노드 착수 시 (§15.5 근거: 의존 포트 92 → 4, `ncurses` 불안정 미러 제거) |
+| ~~`libmysql` → `libmariadb` 교체 여부~~ | **해소됨 (2026-08-10) — 교체 확정, §15.5a** |
 
 ---
 
