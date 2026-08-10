@@ -345,12 +345,21 @@ server/atlas/net/net_types.h           (asio 별칭)
 server/atlas/net/io_runner.h  /  .cpp  (io_context + 워커 풀 + graceful stop)
 server/atlas/net/session.h    /  .cpp  (strand 세션 — 바이트 스트림까지, 프레이밍 없음)
 server/atlas/net/acceptor.h   /  .cpp  (accept 루프 + 세션 생성)
+server/atlas/proto/crc32.h    /  .cpp  (CRC-32 — 🔴 프레이밍 무결성 전용, 변조 방지 아님)
+server/atlas/proto/frame.h    /  .cpp  (12바이트 고정 헤더 인코딩/디코딩 — 설계 문서 §8.1)
+server/atlas/proto/frame_reader.h    /  .cpp  (스트림 재조립 상태 기계 — throw 하지 않는다)
+server/atlas/proto/session_framing.h /  .cpp  (Session ↔ FrameReader 결선)
 ```
 
 🔴 **net 3종이 목록에 있는 이유는 "게임이 바뀌어도 안 바뀌기 때문"이다.** 이 파일들의 경계는
 **바이트 스트림까지**이며 프레임 · 페이로드 식별자 · 무결성 필드를 일절 모른다(설계 문서 §8은 별도
 계층). 게임이 프로토콜을 바꿔도 이 3종은 그대로 따라간다 — 그 경계를 무너뜨리는 순간 자산 목록에서
 빠져야 하는 파일이 된다.
+
+🔴 **proto 4종이 목록에 있는 근거는 같지만 조건이 하나 더 붙는다.** 프레임 계층은 opcode 를
+`UInt16` 로만 다루고 **그 의미를 모른다** — opcode → 핸들러 매핑을 여기에 넣는 순간 게임 코드가
+되어 목록에서 빠진다. 의존 방향은 `atlas_proto → atlas_net` 고정이며(설계 문서 §8.1), 역방향
+링크는 위의 바이트 경계를 컴파일 타임 사실에서 주석으로 격하시킨다.
 
 경로에 `server/` 접두가 붙는 이유는 CMake 루트이자 include 루트가 `server/`이기 때문이다 —
 include 지점은 `#include "atlas/core/types.h"`로 쓰지만 파일은 `server/atlas/...`에 있다.

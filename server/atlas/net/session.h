@@ -19,10 +19,11 @@ namespace atlas {
 // architecture-design.md §9 — one TCP connection, serialised by its own strand.
 //
 // 🔴 THE BOUNDARY OF THIS CLASS IS BYTES. It reads a byte stream and writes a byte stream. Frame
-// headers, payload identifiers, ordering counters and integrity fields are the protocol layer
-// (§8), whose contract is still open (§16), and inventing a header here would have to be undone
-// wholesale later. What arrives at `BytesHandler` is whatever the socket produced — it is not a
-// message, and it is not guaranteed to be a whole anything.
+// headers, payload identifiers, ordering counters and integrity fields are the protocol layer (§8),
+// which now exists as `atlas/proto` — and this class still does not include one line of it. The
+// dependency edge points proto -> net; `AttachFrameReader` (proto/session_framing.h) installs a
+// reader through `SetBytesHandler` from the outside. What arrives at `BytesHandler` is whatever the
+// socket produced — it is not a message, and it is not guaranteed to be a whole anything.
 //
 // 🔴 Concurrency is the strand and nothing else (§9.1). Every member below is touched only from
 // handlers bound to `strand_`, which is why there is not a single lock in this class. Putting one
@@ -34,6 +35,16 @@ public:
     using BytesHandler =
         std::function<void(const std::shared_ptr<Session>&, std::span<const Byte>)>;
     using CloseHandler = std::function<void(const std::shared_ptr<Session>&)>;
+
+    // architecture-design.md §9 — the back-pressure cap this class deliberately left open until a
+    // message had a definition. The frame layer (§8.1) gave it one, so the cap lands here as a
+    // plain byte count: the session still does not know what a message is, only how many bytes it
+    // is willing to hold for a peer that is not draining them.
+    //
+    // 🔴 Exceeding it CLOSES the connection. It does not drop the payload. A drop breaks the
+    // protocol silently and the symptom turns up days later in an unrelated place; a close is loud,
+    // immediate, and leaves the peer with a fact it can act on.
+    static constexpr std::size_t kMaxWriteQueueBytes = 1024 * 1024;
 
     // 🔴 cpp-style.md §4.4 — a session MUST be owned by a shared_ptr, because `shared_from_this()`
     // inside every handler is what keeps it alive while an operation is in flight. The constructor
@@ -95,9 +106,11 @@ private:
 
     // Write policy (architecture-design.md §9): FIFO, exactly one `async_write` in flight, the next
     // one started from the completion of the previous. The strand is what makes an unlocked
-    // container correct here. 🔴 Unbounded on purpose in this slice — a back-pressure cap needs a
-    // message size to be meaningful, and messages do not exist until the frame layer does.
+    // container correct here, and it is also why the running total below can be a plain member.
     std::deque<std::vector<Byte>> write_queue_;
+    // Sum of the sizes in `write_queue_`. Kept incrementally rather than recomputed: the cap is
+    // tested on every enqueue, and walking a deque per Send would make the check the cost.
+    std::size_t write_queue_bytes_{0};
 
     BytesHandler bytes_handler_;
     CloseHandler close_handler_;

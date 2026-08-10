@@ -97,9 +97,19 @@ void Session::EnqueueOnStrand(std::vector<Byte>&& payload) {
         return;
     }
 
+    // 🔴 architecture-design.md §9 — back-pressure. Written as a subtraction against the cap rather
+    // than `write_queue_bytes_ + payload.size() > kMaxWriteQueueBytes` so the sum cannot overflow;
+    // the invariant `write_queue_bytes_ <= kMaxWriteQueueBytes` makes the left side safe.
+    // The connection is closed, not the payload dropped — a drop breaks the protocol quietly.
+    if (payload.size() > kMaxWriteQueueBytes - write_queue_bytes_) {
+        CloseOnStrand("write queue above kMaxWriteQueueBytes");
+        return;
+    }
+
     // An empty queue means no write is in flight, so this one has to start the chain. A non-empty
     // one means OnWriteOnStrand will pick the new entry up when the current write completes.
     const bool idle = write_queue_.empty();
+    write_queue_bytes_ += payload.size();
     write_queue_.push_back(std::move(payload));
     if (idle) {
         StartWriteOnStrand();
@@ -123,6 +133,14 @@ void Session::OnWriteOnStrand(const ErrorCode& ec) {
         return;
     }
 
+    // 🔴 A successful write and a failed read can complete in the same strand batch, and the read
+    // runs first: by the time this handler is entered the close has already happened. Without this
+    // guard the queue below is walked on a session that has nothing left to send.
+    if (closed_) {
+        return;
+    }
+
+    write_queue_bytes_ -= write_queue_.front().size();
     write_queue_.pop_front();
     if (!write_queue_.empty()) {
         StartWriteOnStrand();
@@ -142,7 +160,13 @@ void Session::CloseOnStrand([[maybe_unused]] std::string_view reason) {
     ErrorCode ignored;
     socket_.shutdown(Socket::shutdown_both, ignored);
     socket_.close(ignored);
-    write_queue_.clear();
+
+    // 🔴 The queue is deliberately NOT cleared here. `close()` cancels the in-flight `async_write`,
+    // but cancellation is asynchronous: the buffer at the front stays registered with the OS until
+    // the completion handler actually runs, so freeing it now is a use-after-free window. The
+    // handler holds `shared_from_this()`, so the session — and with it the queue — outlives every
+    // pending operation, and the memory is released when the last handler drops its reference.
+    // `closed_` is what stops anything from being added or consumed in the meantime.
 
     ATLAS_LOG_DEBUG("session {} closed: {}", IdValue(id_), reason);
 
