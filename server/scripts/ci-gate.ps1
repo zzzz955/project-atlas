@@ -16,6 +16,10 @@
     🔴 The unity-OFF build is the step that catches missing #includes and ODR collisions
     (architecture-design.md §15.1, cost 4). Never drop it to save time.
 
+    🔴 The gate loads server/.env (key names logged, values never - §5.4) so the DB-backed suites
+    actually run, and it FAILS if a test was Skipped while a database was reachable. ctest exits 0
+    on a skip, so without this the gate printed PASS having verified nothing about the DB axis.
+
     Configure runs as a prep step before format/tidy because clang-tidy needs the
     compile_commands.json that only a configured Ninja build tree produces.
 
@@ -76,11 +80,78 @@ function Import-VsDevEnv {
                 (Join-Path $install 'VC\Tools\Llvm\x64\bin') + ';' + $env:PATH
 }
 
+function Import-DotEnv {
+    # 🔴 The DB integration suites (db_runtime_test / tx_atomicity_test / game_equip_test) read
+    # ATLAS_DB_* from the environment and GTEST_SKIP() when it is absent. Without this the gate
+    # printed [gate] PASS while every DB test was Skipped - a green run that proved nothing, which
+    # is exactly what those suites' own comments say is worse than a red one. Measured 2026-08-10.
+    param([Parameter(Mandatory)] [string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "[gate] no $Path - DB-backed tests will skip (see the test step)" -ForegroundColor Yellow
+        return @()
+    }
+
+    $loaded = @()
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') { continue }
+        $name = $Matches[1]
+        $value = $Matches[2].Trim()
+        if ($value -eq '') { continue }
+        # An explicitly exported variable outranks the file - that is how a caller points the gate
+        # at a different database without editing .env.
+        if (Test-Path -LiteralPath "env:$name") { continue }
+        Set-Item -Path "env:$name" -Value $value
+        $loaded += $name
+    }
+
+    # 🔴 Key names only, never values (architecture-design.md §5.4). .env holds credentials.
+    if ($loaded) { Write-Host ("[gate] .env loaded (key names only): {0}" -f ($loaded -join ', ')) }
+
+    # 🔴 .env carries ATLAS_DB_HOST=mysql, the compose SERVICE name, which only resolves on the
+    # compose network. This gate always runs on the host, where that name is nothing. Overriding
+    # only a file-sourced value keeps an explicit caller-set host intact.
+    if ($loaded -contains 'ATLAS_DB_HOST' -and $env:ATLAS_DB_HOST -eq 'mysql') {
+        $env:ATLAS_DB_HOST = '127.0.0.1'
+        Write-Host '[gate] ATLAS_DB_HOST: compose service name -> 127.0.0.1 (gate runs on the host)'
+    }
+
+    return $loaded
+}
+
+function Test-DbReachable {
+    # Decides whether a Skipped DB test is acceptable or a gate failure. A TCP connect is enough:
+    # the question is "was a database available and we tested nothing anyway", not "can we log in".
+    if (-not $env:ATLAS_DB_HOST) { return $false }
+    $port = if ($env:ATLAS_DB_PORT) { [UInt16]$env:ATLAS_DB_PORT } else { [UInt16]3306 }
+
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        return $client.ConnectAsync($env:ATLAS_DB_HOST, $port).Wait(2000) -and $client.Connected
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
 if (-not $WhatIfPreference) { Import-VsDevEnv }
+
+$dbReachable = $false
+if (-not $WhatIfPreference) {
+    [void](Import-DotEnv -Path (Join-Path $ServerDir '.env'))
+    $dbReachable = Test-DbReachable
+    if ($dbReachable) {
+        Write-Host ("[gate] database reachable at {0}:{1} - DB-backed tests must run" -f $env:ATLAS_DB_HOST, $env:ATLAS_DB_PORT)
+    }
+}
 
 # 🔴 Both elements go inside one @(): `@(a), (b)` builds a NESTED array (element 0 is itself an
 # array), which Get-ChildItem -Path rejects with "Cannot convert 'System.Object[]' to ... 'String'".
-$sourceGlobs = @((Join-Path $ServerDir 'atlas'), (Join-Path $ServerDir 'tests'))
+# 🔴 `game` belongs here too. It was missing when server/game/ landed, so an entire new source tree
+# was outside format-check while the gate still said PASS - the same shape of hole as a Skipped test
+# counted as a pass. Every new top-level source tree must be added here in the change that creates it.
+$sourceGlobs = @((Join-Path $ServerDir 'atlas'), (Join-Path $ServerDir 'game'), (Join-Path $ServerDir 'loadgen'), (Join-Path $ServerDir 'tests'))
 $buildDirUnityOff = Join-Path $ServerDir "build/$UnityOffPreset"
 
 # 🔴 generated/ is deliberately absent from $sourceGlobs: generated output is never formatted or
@@ -143,7 +214,30 @@ Invoke-Step "build (unity OFF - $UnityOffPreset, missing-include / ODR gate)" {
 
 Invoke-Step "test (ctest, $UnityOffPreset)" {
     Push-Location $ServerDir
-    try { ctest --preset $UnityOffPreset --output-on-failure } finally { Pop-Location }
+    try {
+        $output = & ctest --preset $UnityOffPreset --output-on-failure 2>&1
+        $output | ForEach-Object { Write-Host $_ }
+        if ($LASTEXITCODE -ne 0) { return }
+
+        # 🔴 ctest exits 0 on a Skipped test, so the exit code alone cannot tell "everything passed"
+        # from "the interesting half never ran". Whether that is acceptable depends entirely on
+        # whether a database was there to be tested against.
+        $skipped = @($output | Select-String -SimpleMatch '***Skipped').Count
+        if ($skipped -eq 0) { return }
+
+        if ($dbReachable) {
+            Write-Host ("[gate] {0} test(s) Skipped while {1}:{2} was reachable." -f `
+                        $skipped, $env:ATLAS_DB_HOST, $env:ATLAS_DB_PORT) -ForegroundColor Red
+            Write-Host '[gate] A database was available and the suite tested nothing against it - that is a gate failure, not a pass.' -ForegroundColor Red
+            $global:LASTEXITCODE = 1
+            return
+        }
+
+        Write-Host ("[gate] {0} test(s) Skipped: no database reachable at {1}." -f `
+                    $skipped, $env:ATLAS_DB_HOST) -ForegroundColor Yellow
+        Write-Host '[gate] 🔴 The DB axis was NOT verified by this run. Start it and re-run:' -ForegroundColor Yellow
+        Write-Host '[gate]     docker compose --env-file server/.env up -d mysql' -ForegroundColor Yellow
+    } finally { Pop-Location }
 }
 
 if (-not $WhatIfPreference) { Write-Host '[gate] PASS' -ForegroundColor Green }

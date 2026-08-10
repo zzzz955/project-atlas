@@ -33,6 +33,14 @@ RUN git clone https://github.com/microsoft/vcpkg.git /src/vcpkg \
 COPY vcpkg.json CMakePresets.json CMakeLists.txt ./
 COPY atlas ./atlas
 COPY generated ./generated
+# 🔴 게임 계층(§14). 코어 순수성 게이트(§15.4)가 `item`/`inventory`/`equip` 를 server/atlas/**
+# 밖으로 밀어냈으므로 별도 디렉터리이고, 루트 CMakeLists 가 add_subdirectory(game) 로 잡는다 —
+# 여기서 빠지면 configure 가 실패한다.
+COPY game ./game
+# 🔴 부하 하네스(§16.1). 배포 산출물이 아니라 클라이언트이지만 루트 CMakeLists 가
+# add_subdirectory(loadgen) 으로 잡으므로 여기서 빠지면 configure 가 실패한다. 아래 runtime
+# 스테이지는 이 바이너리를 복사하지 않는다 — 서버 이미지 안의 부하 생성기는 공격자의 도구다.
+COPY loadgen ./loadgen
 COPY tests ./tests
 
 # 🔴 §15.2: a container has a fresh filesystem every time, so vcpkg's default local binary cache
@@ -56,11 +64,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 
 # 🔴 배포 이미지에 테스트 바이너리를 넣지 않는다. 테스트는 CI 게이트(§15.4)의 일이고, 여기 있으면
-# 배포 이미지가 실행하는 것이 서버가 아니게 된다. FE / GAME / WORLD 실행 파일은 후속 슬라이스이며
-# 그때 여기에 COPY 로 추가된다.
+# 배포 이미지가 실행하는 것이 서버가 아니게 된다.
 #
-# 🔴 아래 COPY 는 캐시 편의가 아니라 구조다: runtime 이 builder 에서 아무것도 가져가지 않으면
-# BuildKit 이 builder 스테이지를 통째로 스킵해서, 한 줄도 컴파일하지 않은 이미지가 나온다.
+# 🔴 GAME 만 들어온다. FE / WORLD 실행 파일은 아직 없고, 없는 것을 있는 척 감싸지 않는다(§15.3) —
+# entrypoint 는 그 두 role 에 대해 계속 exit 69 로 죽는다.
+COPY --from=builder /src/build/linux-release/game/atlas_game /app/atlas_game
 COPY --from=builder /src/server.ini /app/server.ini
 
 RUN printf 'revision=%s\nbuilt=%s\n' "$ATLAS_GIT_SHA" "$ATLAS_BUILD_TIME" > /app/VERSION

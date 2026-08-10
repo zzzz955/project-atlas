@@ -221,17 +221,20 @@ jobs:
 
       - name: format-check
         if: steps.scope.outputs.cpp == 'true'
-        run: clang-format --style=file --dry-run -Werror $(find server/atlas server/tests -name '*.h' -o -name '*.cpp')
+        run: clang-format --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/tests -name '*.h' -o -name '*.cpp')
 
       # 🔴 This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
       # clang-tidy cannot read the MSVC /Yc precompiled header that the local Ninja/cl tree emits.
       # Here clang produces both the compile database and the PCH, so the step is sound.
       # cpp-style.md §7.3 · architecture-design.md §15.4.
       #
-      # 🔴 Run one clang-tidy per file across all cores. Measured on the first green run
-      # (31358038029, §15.5d): a single serial invocation over 14 TUs took 2m16s - ~9.7s per file,
-      # and once the vcpkg cache is warm that makes clang-tidy the single largest step in the gate.
-      # clang-tidy has no internal parallelism, so the fan-out has to happen here.
+      # 🔴 Run one clang-tidy per file across all cores. clang-tidy has no internal parallelism, so
+      # the fan-out has to happen here. Measured (§15.5d, §15.5e): 14 TUs serial = 2m16s, fanned out
+      # = 1m18s. 🔴 That is 1.74x on a 4-vCPU runner, NOT 4x - a few TUs (the gtest-heavy test
+      # translation units) dominate and the other cores idle waiting on that tail. Do not assume
+      # core-count speedup for work with uneven per-item cost.
+      # 🔴 Still 48% of a warm run. Job sharding was measured and deferred, with an explicit
+      # threshold to revisit at: clang-tidy > 3min (~35 TUs). See §15.5e - this repo crosses it.
       # 🔴 xargs exits 123 when ANY invocation fails, so the gate still fails on a single violation -
       # parallelism must not soften the gate. `-n 1` gives each file its own process; the ~0.3s
       # startup is noise against ~10s of analysis, and per-file processes keep each diagnostic
@@ -239,7 +242,7 @@ jobs:
       - name: clang-tidy
         if: steps.scope.outputs.cpp == 'true'
         run: |
-          find server/atlas server/tests -name '*.cpp' -print0 \
+          find server/atlas server/game server/loadgen server/tests -name '*.cpp' -print0 \
             | xargs -0 -P "$(nproc)" -n 1 \
                 clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet
 

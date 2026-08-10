@@ -62,11 +62,14 @@ services:
     volumes:
       - atlas-redis-data:/data
 
-  # 🔴 기본 기동에서 제외 — FE/GAME/WORLD 바이너리는 후속 슬라이스다. 지금은 entrypoint 뼈대만
-  #    있고(role → 바이너리 경로 매핑과, 바이너리가 없을 때의 명확한 실패까지), 그 이상을 감싸지
-  #    않는다(§15.3).
+  # 🔴 기본 기동에서 제외 — 프로파일 `app` 뒤다. 이제 `ATLAS_ROLE=game` 은 실재하는 바이너리
+  #    (/app/atlas_game)로 뜨고, `fe` / `world` 는 여전히 entrypoint 에서 exit 69 로 죽는다.
+  #    없는 것을 있는 척 감싸지 않는다(§15.3) — role 하나가 생겼다고 나머지를 가리지 않는다.
   # 단일 이미지 + ATLAS_ROLE 분기 entrypoint: 서버 3종을 각각의 이미지로 굽지 않는다. role 별로
   # 배포 단위를 쪼개면 §5.2의 "WORLD 와 InterWorld 는 동일 바이너리" 명제가 이미지 층에서 깨진다.
+  #
+  # 🔴 배포 후 버전 확인은 절차의 일부다(§15.3). 레이어 캐시는 어제 바이너리를 태연히 배포한다:
+  #     docker run --rm --entrypoint cat project-atlas-server /app/VERSION
   server:
     profiles: [app]
     build:
@@ -75,6 +78,11 @@ services:
     restart: unless-stopped
     env_file:
       - server/.env
+    ports:
+      # GAME 의 수신 포트. 🔴 컨테이너 쪽 번호는 server/server.ini `[server] listen_port` 와 같은
+      # 값이어야 한다 — ini 는 이미지에 구워져 있고 compose 는 그 값을 알지 못하므로, 어긋나면
+      # 컨테이너는 정상 기동하고 아무도 접속하지 못하는 형태로 조용히 실패한다.
+      - "${ATLAS_GAME_PORT:-7777}:7777"
     environment:
       # 🔴 기본값을 두지 않는다. entrypoint 는 ATLAS_ROLE 미설정을 기동 실패로 다루는데
       #    (scripts/entrypoint.sh · §15.3), compose 가 `:-game` 으로 조용히 채워 주면 그 방어가
@@ -82,6 +90,18 @@ services:
       #    이 값은 배포층의 바이너리 선택이고, 런타임 정체성은 server.ini `[server] role` 이다 —
       #    둘은 반드시 같은 값이어야 한다.
       ATLAS_ROLE: ${ATLAS_ROLE:?ATLAS_ROLE must be set (fe | game | world | interworld)}
+      # 🔴 이 스택 전용 TLS 완화다. 값을 `${...}` 로 받지 않고 여기 **박아 둔** 이유가 그것이다 —
+      #    켜는 결정이 파일에 보이지 않으면 조용한 다운그레이드가 된다(§15.2).
+      #
+      #    `mysql:8.4` 이미지는 최초 초기화 때 **자기 서명 CA** 를 만든다. MariaDB Connector/C 3.4 는
+      #    기본으로 TLS 를 협상하고 **인증서까지 검증**하므로 그 체인을 거부한다:
+      #      2026 / TLS/SSL error: self-signed certificate in certificate chain
+      #    그 결과 GAME 컨테이너는 listen 도 못 해보고 exit 70 → restart 루프였다(2026-08-10 실측).
+      #
+      #    이 값이 1 이면 연결은 **여전히 암호화되지만**(ENFORCE) 서버 신원은 검증하지 않는다.
+      #    수동 도청은 막고 능동 MITM 은 막지 못한다. 🔴 운영 배포는 이렇게 뜨면 안 된다.
+      #    서버는 부팅마다 이 사실을 WARN 으로 한 줄 찍는다(game/main.cpp).
+      ATLAS_DB_TLS_NO_VERIFY: "1"
     depends_on:
       mysql:
         condition: service_healthy

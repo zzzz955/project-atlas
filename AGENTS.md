@@ -135,6 +135,10 @@ cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them v
 CI is **green** since run `31358038029` (2026-08-10) — all 7 gate steps pass on `ubuntu-24.04`.
 `ci-gate.ps1` is still the local gate and is **not** equivalent: it skips `clang-tidy` (MSVC PCH),
 so naming / `bugprone` / `modernize` violations only surface in CI. `AD §15.5c`.
+🔴 The gate loads `server/.env` (key **names** logged, values never) so the DB suites actually run,
+and **fails if a test was `Skipped` while a database was reachable** — `ctest` exits 0 on a skip, so
+without this it printed PASS having proven nothing about the DB axis. CI has no MySQL service, so
+**the DB axis is verified locally only.** `AD §15.4`.
 
 ## Context budget
 Tool results are next-turn input tokens — the dominant cost. Bound output **at the source**, never by
