@@ -7,6 +7,18 @@
 --    server to diff against yet (architecture-design.md 10). Apply this by hand.
 -- database: atlas
 
+-- GAME 서버가 소유하는 캐릭터 인벤토리/장비 테이블. §3.3 확장 근거: 다중 테이블·다중 행 트랜잭션 원자성을 운동시킨다 — characters 단일 행 갱신은 트랜잭션 없이도 원자적이라 트랜잭션 계층을 증명하지 못한다(장착 = 기존 해제 + 신규 장착 + 캐릭터 반영 최소 3쓰기). item_id 는 정적 아이템 정의의 참조값이며 🔴 정적 테이블은 이 레포에 없다(info_generator 는 이 슬라이스 밖). 🔴 '장착 슬롯당 1개' 유일성은 DB 제약이 아니다 — MySQL 은 부분 유니크 인덱스(WHERE 조건부)를 지원하지 않으므로 equip_slot != 0 에만 걸리는 UNIQUE 를 만들 수 없다. 이 불변식은 애플리케이션 코드 + 트랜잭션으로 지키며, 중간 실패 시 불변식이 깨지지 않는지가 롤백의 관측 지점이다. 🔴 이 표를 데모 최소 집합(테이블 1개 · 슬롯 3종) 이상으로 늘리지 않는다.
+CREATE TABLE IF NOT EXISTS `character_items` (
+  `server_id` SMALLINT UNSIGNED NOT NULL,
+  `character_id` BIGINT UNSIGNED NOT NULL,
+  `item_uid` BIGINT UNSIGNED NOT NULL,
+  `item_id` INT UNSIGNED NOT NULL,
+  `stack_count` SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+  `equip_slot` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  PRIMARY KEY (`server_id`, `character_id`, `item_uid`),
+  KEY `idx_character_items_equip_slot` (`server_id`, `character_id`, `equip_slot`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- GAME 서버가 소유하는 캐릭터 영속 테이블. PK는 (server_id, character_id) 스코프(design §6) — 한 계정이 여러 서버에 여러 캐릭터를 가진다. account_uid 는 platform-auth 가 소유하는 계정 식별자의 참조값이며 이 레포가 계정을 재설계하지 않는다. pos_x/pos_y 는 공유 필드 1개의 그리드 좌표, level/exp 는 성장 축 1개 — 둘 다 데모 최소 집합(design §3.3)이며 🔴 이 표를 그 이상 늘리지 않는다.
 CREATE TABLE IF NOT EXISTS `characters` (
   `server_id` SMALLINT UNSIGNED NOT NULL,

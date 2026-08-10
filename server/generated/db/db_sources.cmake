@@ -3,5 +3,6 @@
 #    a stale list cannot silently drop a row struct from the build. CMakeLists.txt includes this.
 set(ATLAS_GENERATED_DB_SOURCES
     db_meta.cpp
+    character_items_row.cpp
     characters_row.cpp
 )

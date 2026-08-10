@@ -129,9 +129,10 @@ DbContext 타깃도 이 레포에는 소비자가 없어 가져오지 않았다(
   `string(N)` · `datetime` · `json` 세 개만 표 밖의 특수 처리이며 emitter 한 곳에서 다룬다.
 - 🔴 **`int` / `long` 을 방출하지 않는다** (`cpp-style.md §4.1`). Windows LLP64 / Linux LP64.
 - 🔴 **`template.ini` 에 접속 정보를 넣지 않는다.** 이 생성기는 DB 에 접속하지 않는다.
-- 🔴 **데모 최소 집합(`design §3.3`)을 넘겨 스키마를 늘리지 않는다.** 현재 `characters` 한 장
-  (복합 PK · 그리드 좌표 · 성장 축 1개)이 전부다. 테이블을 추가하려면 서버 코어의 어떤 미검증
-  경로를 행사하기 위해서인지 먼저 답해야 한다.
+- 🔴 **데모 최소 집합(`design §3.3`)을 넘겨 스키마를 늘리지 않는다.** 현재 두 장이다 —
+  `characters`(복합 PK · 그리드 좌표 · 성장 축 1개)와 `character_items`(인벤토리/장비, 슬롯 3종).
+  테이블을 추가하려면 서버 코어의 어떤 미검증 경로를 행사하기 위해서인지 먼저 답해야 한다
+  (`character_items` 의 답은 다중 테이블 · 다중 행 트랜잭션 원자성이며 `design §3.3` 에 있다).
 - 생성 코드는 `.clang-tidy` 검사 대상이 아니다(`pkt_generator/AGENTS.md` 의 3중 배제와 동일 —
   CI 의 TU 목록이 `server/atlas`·`server/tests` 뿐이고, `HeaderFilterRegex` 가 `/atlas/` 만,
   `ExcludeHeaderFilterRegex` 가 `/generated/` 를 한 번 더 배제한다).
