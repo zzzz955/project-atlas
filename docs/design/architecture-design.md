@@ -686,7 +686,8 @@ gen:check → core-purity → format-check → clang-tidy → build(unity ON) �
 추가할 때 그 어휘를 denylist에 넣지 않으면, 이 게이트는 조용히 낡은 어휘만 지키는 껍데기가 된다.
 
 구현: `server/scripts/ci-gate.ps1` (git remote가 붙기 전까지 **이것이 실질 게이트**) 와
-`.github/workflows/ci.yml` (Linux 전사본, 아직 미검증).
+`.github/workflows/ci.yml` (Linux 전사본, **2026-08-10 run 31358038029 에서 7단계 전부 통과 —
+§15.5c**). 🔴 두 구현은 동등하지 않다: 로컬 게이트는 `clang-tidy` 를 사유 출력과 함께 건너뛴다.
 `configure`는 게이트 단계가 아니라 준비 단계로 format-check 앞에 들어간다 — clang-tidy가 요구하는
 `compile_commands.json`은 구성된 Ninja 트리에서만 나오기 때문이다.
 
@@ -863,21 +864,51 @@ Consider using a NuGet-based binary caching provider instead
 잘못 건너뛴 게이트는 없는 게이트보다 나쁘다 — 아무도 컴파일하지 않은 코드에 초록을 보고하기
 때문이다. 🔴 `gen:check` 와 `core-purity` 는 **docs-only 푸시에서도 항상 돈다.**
 
-**예상 효과**: 현재 12분(실패) / 20분대(성공 시) → 첫 런 ~10분(캐시 적재) → **이후 런 2~4분**.
+**결과 — §15.5d 에서 실측으로 대체됨.**
 
-🔴 **이 예상은 아직 실측이 아니다.** 초록 런의 실측치로 이 문단을 교체하라.
+#### 15.5c 첫 초록 런 (2026-08-10, run 31358038029 · `6fa57c9`)
 
-#### 15.5c 아직 검증되지 않은 것 (§15.5a · §15.5b 공통)
+🔴 **CI 게이트 7단계가 처음으로 전부 통과했다.** §15.5a(`libmariadb`)와 §15.5b(캐시 개편)가
+동시에 검증됐고, `configure` 이후 5단계(format-check · clang-tidy · build ×2 · test)가 러너에서
+**처음 실행됐다.** 총 **7분 4초**.
 
-🔴 §15.5a 의 `libmariadb` 실측은 **Windows 로컬**이고, 실패한 것은 **Linux 러너**다. §15.5b 의
-캐시 개편은 **아직 한 번도 러너에서 돌지 않았다.** 그리고 `configure` 이후 단계(format-check ·
-clang-tidy · build ×2 · test)는 러너에서 **한 번도 실행된 적이 없다** — 특히 `clang-tidy` 는 로컬
-게이트가 아예 건너뛰는 단계이므로(§15.4) 네이밍 · `bugprone` · `modernize` 위반이 **거기서 처음
-한꺼번에 드러난다.**
+| 단계 | 소요 | 비고 |
+|---|---|---|
+| `configure` | **3분 46초** | 🔴 캐시 **미스**(첫 런). 포트 102 → **67** (`libmariadb` 효과) |
+| **`clang-tidy`** | **2분 16초** | 14 TU 직렬. 🔴 로컬 게이트가 건너뛰는 단계가 여기서 처음 돌았다 |
+| `build` (unity ON) | 15초 | |
+| `build` (unity OFF) | 15초 | |
+| `test` | 0초 | |
+| 나머지 전부 | 약 35초 | checkout · node · gen:check · core-purity · toolchain · bootstrap |
 
-초록 런 id 를 적기 전까지 §15.5a 와 §15.5b 는 "고쳤다"가 아니라 **"원인을 제거하고 다음 실패를
-노출시키기로 했다"**이다. 🔴 이 문장을 지우는 조건은 초록 런 하나뿐이며, 그 전에 지우면 문서가
-거짓을 말하게 된다.
+**캐시가 실제로 저장됐다**: `Cache saved with key: vcpkg-x64-linux-eaca4a5…`, **38 MB**.
+🔴 저장 단계가 1초로 끝나 의심스러웠으나 정상이다 — Boost 의존 대부분이 헤더 전용이라 아카이브가
+작다. 크기가 작다는 것은 캐시가 비었다는 뜻이 아니다.
+
+#### 15.5d 캐시가 워밍되면 병목이 옮겨간다 — `clang-tidy` 병렬화 (2026-08-10)
+
+🔴 §15.5c 의 표에서 읽어야 할 것은 "3분 46초가 제일 크다"가 아니다. **그 3분 46초는 캐시 미스인
+첫 런에만 발생한다.** 캐시가 워밍된 다음 런부터는 `configure` 가 수십 초로 떨어지고, 그 순간
+**`clang-tidy` 2분 16초가 게이트 전체의 단독 최대 항목이 된다.**
+
+실측: 14 TU / 2분 16초 = **TU 당 약 9.7초**. `clang-tidy` 는 내부 병렬성이 없어 한 프로세스가
+파일을 하나씩 처리한다. GitHub 호스티드 러너는 4 vCPU 이므로 **3/4 를 놀리고 있었다.**
+
+**확정: 파일 단위로 팬아웃한다.**
+
+```bash
+find server/atlas server/tests -name '*.cpp' -print0 \
+  | xargs -0 -P "$(nproc)" -n 1 \
+      clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet
+```
+
+- 🔴 **게이트가 약해지지 않는다**: `xargs` 는 하위 호출이 하나라도 실패하면 123 으로 종료한다.
+  병렬화가 실패를 삼키면 그것은 최적화가 아니라 게이트 파괴다
+- `-n 1` 로 파일당 프로세스를 준다. 프로세스 시작 비용 ~0.3초는 분석 ~10초 대비 잡음이고,
+  파일당 프로세스여야 출력이 뒤섞여도 진단이 어느 파일 것인지 남는다
+- 🔴 **TU 가 늘수록 이 항목이 다시 커진다.** 지금은 14개지만 프레임 계층 · DB 런타임 · 도메인
+  모델이 들어오면 수십 개가 된다. 러너 코어 수가 상한이므로, 그때는 파일 팬아웃이 아니라 **잡
+  분할**을 재검토할 시점이다
 
 ---
 

@@ -1,5 +1,9 @@
-# 🔴 PARTIALLY VERIFIED - and every verified run so far FAILED.
-# History (architecture-design.md §15.5 / §15.5a / §15.5b have the full logs and measurements):
+# ✅ GREEN since run 31358038029 (2026-08-10, `6fa57c9`) - all 7 gate steps pass in 7m04s.
+# 🔴 Do NOT read that as "CI is settled": the three failures below took three separate fixes, and
+# every one of them was a wrong diagnosis on the first try. Full logs and measurements are in
+# architecture-design.md §15.5 / §15.5a / §15.5b / §15.5c / §15.5d.
+#
+# History:
 #   run 31142102019 : failed at `configure` - github.com/boostorg/polygon 500 + an ncurses hash
 #                     mismatch, both pulled in by libmysql (92 transitive ports)
 #   re-run          : failed at `configure` again, at a DIFFERENT port (boostorg/core 500)
@@ -11,15 +15,16 @@
 # Three failures, three different causes, one common source: libmysql. §15.5a (2026-08-10) swaps the
 # DB client to `libmariadb` (92 transitive ports -> 4). Dep count is still 6 (§15.2).
 #
-# 🔴 THE BINARY CACHE HAS NEVER WORKED. Measured on run 31153396554 (§15.5b): vcpkg prints
-#     "The 'x-gha' binary caching backend has been removed"
-# and carries on with NO cache at all - `clear;` had also disabled the default local one. Timings
-# from that run: attempt 1 = 9m18s (102 ports built from source), attempts 2 and 3 = ~21s each
-# (they reused the on-disk tree, not a cache). So every run pays the full source build once.
-# This revision replaces x-gha with the `files` backend wrapped in actions/cache.
+# 🔴 THE BINARY CACHE HAD NEVER WORKED until 2026-08-10. Measured on run 31153396554 (§15.5b):
+# vcpkg printed "The 'x-gha' binary caching backend has been removed" and carried on with NO cache
+# at all - `clear;` had also disabled the default local one. Timings from that run: attempt 1 =
+# 9m18s (102 ports built from source), attempts 2 and 3 = ~21s each (they reused the on-disk tree,
+# not a cache). Replaced with the `files` backend wrapped in actions/cache; the first green run
+# stored 38 MB (§15.5c).
 #
-# Everything after `configure` - format-check, clang-tidy, the two builds, ctest - has still never
-# executed on a runner. `server/scripts/ci-gate.ps1` remains the gate that is actually exercised.
+# 🔴 The bottleneck MOVES once that cache is warm. On the first green run `configure` was 3m46s
+# (cache miss) and `clang-tidy` 2m16s; from the second run on, configure collapses and clang-tidy
+# is the largest step in the gate. That is why clang-tidy is fanned out per file below (§15.5d).
 #
 # Gate order is architecture-design.md §15.4:
 #   gen:check -> core-purity -> format-check -> clang-tidy -> build(unity ON) -> build(unity OFF)
@@ -222,9 +227,21 @@ jobs:
       # clang-tidy cannot read the MSVC /Yc precompiled header that the local Ninja/cl tree emits.
       # Here clang produces both the compile database and the PCH, so the step is sound.
       # cpp-style.md §7.3 · architecture-design.md §15.4.
+      #
+      # 🔴 Run one clang-tidy per file across all cores. Measured on the first green run
+      # (31358038029, §15.5d): a single serial invocation over 14 TUs took 2m16s - ~9.7s per file,
+      # and once the vcpkg cache is warm that makes clang-tidy the single largest step in the gate.
+      # clang-tidy has no internal parallelism, so the fan-out has to happen here.
+      # 🔴 xargs exits 123 when ANY invocation fails, so the gate still fails on a single violation -
+      # parallelism must not soften the gate. `-n 1` gives each file its own process; the ~0.3s
+      # startup is noise against ~10s of analysis, and per-file processes keep each diagnostic
+      # attributable when the streams interleave.
       - name: clang-tidy
         if: steps.scope.outputs.cpp == 'true'
-        run: clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet $(find server/atlas server/tests -name '*.cpp')
+        run: |
+          find server/atlas server/tests -name '*.cpp' -print0 \
+            | xargs -0 -P "$(nproc)" -n 1 \
+                clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet
 
       - name: build (unity ON)
         if: steps.scope.outputs.cpp == 'true'
