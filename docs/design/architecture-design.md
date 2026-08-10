@@ -1289,10 +1289,14 @@ bootstrap 9 + configure 5 = 32초)에 묶여 **하한이 133초**이기 때문�
 
 | | 로컬 게이트 | CI (개선 전) |
 |---|---|---|
-| `clang-format` | **19.1.5** (VS 2022 동봉) | **19.1.1** (`noble-updates`, `1:19.1.1-1ubuntu1~24.04.2`) |
+| `clang-format` | **19.1.5** (VS 2022 동봉) | **18.1.3** — 🔴 워크플로가 깐 것은 19였으나 실행된 것은 러너 기본 18이었다. 전말은 §15.5g |
 
-메이저를 19로 핀했으니 같은 판정이 나올 것이라 가정했고, 그 가정이 깨진 지점은 **트레일링 주석
-정렬의 `ColumnLimit` 계산 단위**다.
+🔴 **최초 진단은 "CI = 19.1.1(`noble-updates`)"였고 그것은 틀렸다.** 다음 런에서 버전을 로그로
+찍고서야 18.1.3 이 드러났다(§15.5g). 아래 메커니즘은 그대로 성립한다 — 바이트로 세는 구현이
+18이었을 뿐이다. **여기서 배울 것: 버전을 로그에 찍기 전까지 "어느 버전이 돌았는지"는 추정이다.**
+
+메이저를 19로 핀했다고 믿었고 같은 판정이 나올 것이라 가정했으며, 그 가정이 깨진 지점은
+**트레일링 주석 정렬의 `ColumnLimit` 계산 단위**다.
 
 ```cpp
     ChecksumMismatch,    // §8.1 crc32 disagrees — framing desynchronised or the bytes are corrupt
@@ -1314,6 +1318,45 @@ bootstrap 9 + configure 5 = 32초)에 묶여 **하한이 133초**이기 때문�
 CI 가 서로 다른 배포처에서 온 같은 메이저를 쓰는 한, 패치 릴리스의 동작 변경이 그대로 게이트
 불일치가 된다. §15.4 의 "로컬 게이트는 CI 와 등가가 아니다"는 `clang-tidy` 만의 각주가 아니라
 **도구 출처가 다른 모든 단계에 적용되는 규칙**이다.
+
+#### 15.5g 🔴 CI 의 `clang-tidy` 는 한 번도 19로 돈 적이 없다 (2026-08-11, run 31417777347)
+
+§15.5f 의 조치 후 `format-check` 는 통과했고, **`clang-tidy` 가 붉었다.** 그 로그가 훨씬 큰 것을
+드러냈다.
+
+```
+Get:10 apt.llvm.org … clang-format-19  1:19.1.7~…      ← 설치는 됐고
+Get:12 apt.llvm.org … clang-tidy-19    1:19.1.7~…
+Ubuntu clang-format version 18.1.3 (1ubuntu1)          ← 실행된 것은 18이다
+Ubuntu LLVM version 18.1.3
+.clang-tidy:11:1: error: unknown key 'ExcludeHeaderFilterRegex'
+Error parsing .clang-tidy: Invalid argument            ← 파일마다, 런마다
+```
+
+**원인**: `update-alternatives --install /usr/bin/clang-format clang-format … 100` 은
+`ubuntu-24.04` 러너에서 **동작하지 않는다.** 이미지에 `/usr/bin/clang-format` 이 (18 패키지의)
+**실체 파일**로 존재하므로 alternatives 는 링크로 교체하지 않고 경고만 남긴 뒤 성공으로 끝난다.
+`set -eu` 도 이것을 잡지 못한다.
+
+🔴 **따라서 §15.5c 가 "7단계 전부 통과"라고 기록한 첫 초록 런을 포함해, 지금까지의 모든 런에서
+`clang-tidy` 는 18.1.3 이었고 `.clang-tidy` 는 매 파일마다 파싱 실패했다.** 그 파일이 정의한
+검사 집합(`readability-identifier-naming` · `bugprone-*` · `performance-*` · `modernize-*`)과
+`generated/` 제외(§7.1 · CS §7.1)가 **한 번도 적용된 적이 없다.** 🔴 게이트가 문서보다 약했고,
+그 약함이 초록으로 보고돼 왔다 — §15.4 의 "아무것도 증명하지 못한 초록은 빨강보다 나쁘다"가
+DB 축에 이어 두 번째로 실현된 사례다.
+
+**조치 (2026-08-11)**:
+
+1. 🔴 **`update-alternatives` 를 폐기하고 모든 단계가 버전 접미 바이너리를 직접 호출한다**
+   (`clang-format-19` · `clang-tidy-19`). 링크 경합이 없어 판정이 결정적이다. 다시 넣지 마라
+2. 설치 직후 **두 도구의 버전을 로그에 찍는다.** 이 사고는 버전이 로그에 없었기 때문에 두 런을
+   잡아먹었다
+3. `server/tests/game_equip_test.cpp` 의 범위 밖 enum 캐스트에 `NOLINTNEXTLINE` + 사유. 🔴 캐스트를
+   **없애지 않는 이유**: 열거자가 이름 붙이지 않은 값을 `IsEquippableSlot` 이 거부하는지가 그
+   단언의 전부이고, 그 값은 변조된 패킷이 실제로 실어 보내는 것이다(§8.2)
+
+🔴 **미해결로 남는 것**: 19가 처음으로 실제 채점을 하는 런이 아직 없다. 새 경고가 몇 개 나올지는
+**추정하지 않는다** — 다음 런의 목록을 읽고 판정한다(§15.5e 가 정한 패턴: 추정으로 지르지 않는다).
 
 ---
 

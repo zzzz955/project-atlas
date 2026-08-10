@@ -699,6 +699,9 @@ TEST(DomainInventoryTest, SlotZeroIsNotAnEquipTargetAndAnUnheldItemIsRefused) {
     // make the two indistinguishable in the log.
     EXPECT_FALSE(inventory.Equip(kItemWorn, EquipSlot::None));
     EXPECT_FALSE(inventory.Equip(kItemMissing, EquipSlot::Weapon));
+    // 🔴 The out-of-range cast is the assertion's point: IsEquippableSlot must reject a
+    // value no enumerator names - exactly what a tampered packet can carry (§8.2).
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
     EXPECT_FALSE(IsEquippableSlot(static_cast<EquipSlot>(atlas_demo::kEquipSlotCount + 1)));
     EXPECT_TRUE(IsEquippableSlot(EquipSlot::Trinket));
 }

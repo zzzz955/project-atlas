@@ -250,7 +250,9 @@ CheckOptions:
 ```
 🔴 **생성 코드는 반드시 제외한다** — `HeaderFilterRegex`로 `atlas/`만 포함하고, `ExcludeHeaderFilterRegex`로 `generated/`를 배제한다. 🔴 배제를 `HeaderFilterRegex` 하나로 처리할 수 없다 — clang-tidy가 쓰는 `llvm::Regex`는 negative lookahead를 지원하지 않는다.
 
-🔴 **`ExcludeHeaderFilterRegex`는 clang-tidy ≥ 19를 요구한다.** 그 미만에서는 키가 조용히 무시되어 생성 코드가 그대로 검사에 걸린다 → **CI 이미지의 clang-tidy를 19 이상으로 고정할 것.**
+🔴 **`ExcludeHeaderFilterRegex`는 clang-tidy ≥ 19를 요구한다.** 그 미만에서 벌어지는 일은 "키가 조용히 무시된다"가 **아니다** — 실측(2026-08-11, CI run 31417777347)에서 18.1.3은 `unknown key` **에러를 내고 `.clang-tidy` 전체 파싱을 포기했다**. 즉 생성 코드만 새는 것이 아니라 **네이밍·`bugprone-*`·`performance-*`·`modernize-*` 검사 집합 전체가 적용되지 않는다.** 게이트는 그래도 초록으로 보인다(그 커밋에 다른 경고가 없는 한).
+
+🔴 **버전 고정은 `update-alternatives`로 하지 마라.** `ubuntu-24.04` 러너에는 `/usr/bin/clang-tidy`가 18 패키지의 실체 파일로 존재해서 `--install ... 100`이 링크를 교체하지 않고 조용히 진다. **모든 호출부가 `clang-tidy-19`처럼 버전 접미 바이너리를 직접 부르고, 설치 직후 버전을 로그에 찍는다.** `architecture-design.md §15.5g`.
 
 **`.clang-format`** — 포맷을 논쟁 대상에서 완전히 제거
 ```yaml

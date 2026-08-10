@@ -110,13 +110,18 @@ jobs:
       # ---------------------------------------------------------------- C++ half (skippable)
 
       # clang-tidy's ExcludeHeaderFilterRegex (used by .clang-tidy to skip generated/) requires
-      # clang-tidy >= 19 - below that the key is silently ignored. cpp-style.md §7.1.
+      # clang-tidy >= 19 - below that the key is a hard parse error, not a silent no-op.
+      # cpp-style.md §7.1.
       #
-      # 🔴 The LLVM tools come from apt.llvm.org, NOT from noble-updates. noble ships 19.1.1, which
-      # measures ColumnLimit in BYTES when it aligns trailing comments; 19.1.5+ measures display
-      # columns. A comment carrying "§" or "—" is therefore legal under the 19.1.5 that VS 2022
-      # ships locally and illegal under 19.1.1 here - format-check was the only step that could
-      # disagree with a green local gate. Pinning the major version alone was not enough. §15.5f.
+      # 🔴 The LLVM tools come from apt.llvm.org, NOT from noble-updates, AND every step calls the
+      # version-suffixed binary directly. Both halves are load-bearing (§15.5f/g):
+      #   - noble-updates carries 19.1.1, which measures ColumnLimit in BYTES when aligning trailing
+      #     comments; 19.1.5+ measures display columns. A comment carrying "§" or "—" is legal under
+      #     the 19.1.5 that VS 2022 ships locally and illegal under an older clang-format here.
+      #   - `update-alternatives --install /usr/bin/clang-format ... 100` DOES NOT WORK on this
+      #     image: /usr/bin/clang-format already exists as a real file from the preinstalled 18
+      #     packages, so the link is never replaced and every step silently ran 18.1.3 - including
+      #     every "green" run before 2026-08-11. Never reintroduce update-alternatives here.
       - name: install toolchain
         if: steps.scope.outputs.cpp == 'true'
         run: |
@@ -128,11 +133,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build clang-format-19 clang-tidy-19 \
             pkg-config curl zip unzip tar
-          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100
-          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
           # 🔴 Printed on purpose: the next version-skew failure has to be readable from the log.
-          clang-format --version
-          clang-tidy --version | head -n 2
+          # These are the exact binaries the format-check and clang-tidy steps invoke.
+          clang-format-19 --version
+          clang-tidy-19 --version | head -n 2
 
       # The cache key has to change when the port set changes AND when the port tree changes.
       # vcpkg.json carries both: the dependency list and the builtin-baseline SHA that pins the tree.
@@ -235,7 +239,7 @@ jobs:
 
       - name: format-check
         if: steps.scope.outputs.cpp == 'true'
-        run: clang-format --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/tests -name '*.h' -o -name '*.cpp')
+        run: clang-format-19 --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/tests -name '*.h' -o -name '*.cpp')
 
       # 🔴 This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
       # clang-tidy cannot read the MSVC /Yc precompiled header that the local Ninja/cl tree emits.
@@ -258,7 +262,7 @@ jobs:
         run: |
           find server/atlas server/game server/loadgen server/tests -name '*.cpp' -print0 \
             | xargs -0 -P "$(nproc)" -n 1 \
-                clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet
+                clang-tidy-19 -p server/build/linux-ci --warnings-as-errors='*' --quiet
 
       - name: build (unity ON)
         if: steps.scope.outputs.cpp == 'true'

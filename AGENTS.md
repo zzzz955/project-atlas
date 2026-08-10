@@ -136,9 +136,13 @@ CI is **green** since run `31358038029` (2026-08-10) — all 7 gate steps pass o
 `ci-gate.ps1` is still the local gate and is **not** equivalent: it skips `clang-tidy` (MSVC PCH),
 so naming / `bugprone` / `modernize` violations only surface in CI. `AD §15.5c`.
 🔴 **`format-check` runs in both and can still disagree** — the local `clang-format` ships with VS
-(19.1.5) and CI's comes from `apt.llvm.org`; 19.1.1 measured `ColumnLimit` in bytes, so a comment
-holding `§` or `—` passed locally and failed in CI. A green local gate is never proof of a green CI.
-`AD §15.5f`.
+(19.1.5), CI's comes from `apt.llvm.org`; the 18.1.3 CI was really running measured `ColumnLimit` in
+bytes, so a comment holding `§` or `—` passed locally and failed in CI. A green local gate is never
+proof of a green CI. `AD §15.5f`.
+🔴 **CI's `clang-tidy` had never actually run at 19** — `update-alternatives` silently loses to the
+preinstalled 18 on `ubuntu-24.04`, so `.clang-tidy` failed to parse on every run and its check set
+was never applied. Every step now calls the version-suffixed binary (`clang-tidy-19`) directly;
+never reintroduce `update-alternatives` there. `AD §15.5g`.
 🔴 The gate loads `server/.env` (key **names** logged, values never) so the DB suites actually run,
 and **fails if a test was `Skipped` while a database was reachable** — `ctest` exits 0 on a skip, so
 without this it printed PASS having proven nothing about the DB axis. CI has no MySQL service, so
