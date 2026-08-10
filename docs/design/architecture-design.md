@@ -214,7 +214,7 @@ AoI 그리드는 **Actor 단위**로 동작한다. 따라서 브로드캐스트 
 
 고정 헤더를 최소화한다. 길이 · opcode · 시퀀스 + 무결성 필드.
 
-#### 헤더 폭 확정 (2026-08-10, portfolio-slice T2)
+#### 헤더 폭 확정 (2026-08-10, 프레임 계층 슬라이스)
 
 🔴 이 표가 SoT다. `§8.5` DTO 와이어 포맷이 **페이로드 내부**를 정하고, 이 표가 **페이로드 바깥**을
 정한다. 둘은 같은 LE 규약을 쓴다.
@@ -805,11 +805,79 @@ DB 클라이언트가 시스템 전제조건을 요구하는 한 계속 재발�
 `libmariadb[core,iconv]:x64-windows@3.4.8` 설치에 **21초** — `libmysql` 의 92포트 소스 빌드와
 같은 자리다. `-- Configuring done (33.6s)`.
 
-🔴 **그러나 CI 는 아직 검증되지 않았다.** 위 실측은 Windows 로컬이고, 실패한 것은 Linux 러너다.
-그리고 `configure` 이후 단계(format-check · clang-tidy · build ×2 · test)는 러너에서 **한 번도
-실행된 적이 없다**. 이 교체가 `configure` 를 통과시키더라도 그 뒤에서 처음 드러나는 실패가 남아
-있을 수 있다. 초록 런 id 를 여기 적기 전까지 이 절은 "고쳤다"가 아니라 **"원인을 제거하고 다음
-실패를 노출시키기로 했다"**이다.
+#### 15.5b 바이너리 캐시는 한 번도 동작한 적이 없다 (2026-08-10 실측)
+
+🔴 **§15.5 가 확정한 "GHA 바이너리 캐시로 전환"은 효과가 0이었다.** run 31153396554 로그:
+
+```
+$VCPKG_BINARY_SOURCES: warning: The 'x-gha' binary caching backend has been removed.
+Consider using a NuGet-based binary caching provider instead
+  on expression: clear;x-gha,readwrite
+```
+
+**`x-gha` 백엔드는 vcpkg 에서 제거됐다.** 게다가 `clear;` 가 vcpkg 기본 로컬 캐시까지 껐으므로
+폴백조차 없었다. 즉 **모든 CI 런이 매번 전체 포트를 소스 빌드했다.**
+
+**단계별 실측** (총 12분 1초):
+
+| 단계 | 소요 |
+|---|---|
+| `configure` | **11분 15초** |
+| 나머지 전 단계 합계 | 45초 |
+
+**`configure` 내부 재시도별:**
+
+| 시도 | 소요 | 실제로 일어난 일 |
+|---|---|---|
+| 1회차 | **9분 18초** | 102 포트 전부 소스 빌드 후 `libmysql` 에서 실패 |
+| 2회차 | 21초 | 🔴 캐시가 아니라 **같은 런 안의 디스크 상태** 재사용 |
+| 3회차 | 21초 | 위와 동일 |
+
+🔴 재시도가 빨랐던 것이 "캐시가 도는 것처럼" 보였지만, 캐시였다면 **다음 런의 1회차**가 빨랐어야
+한다. 그렇지 않았다는 것이 증거다.
+
+**세 번째 구조 문제 — 설치가 2회다.** `binaryDir` 이 `build/${presetName}` 이므로
+`vcpkg_installed` 도 preset 마다 따로 생긴다. `linux-release` 와 `linux-ci` 는 **동일한 포트
+집합**을 각각 설치한다(유니티 빌드는 컴파일러 설정이지 의존성에 영향을 주지 않는다). 위 런은
+`linux-release` 에서 죽어 `linux-ci` 가 시작조차 못 했을 뿐이고, 성공했다면 20분대였을 것이다.
+
+**확정 (2026-08-10): 3가지를 고친다.**
+
+1. 🔴 **`x-gha` → `files` 백엔드 + `actions/cache`.**
+   `VCPKG_BINARY_SOURCES=clear;files,<workspace>/.vcpkg-binary-cache,readwrite`
+   🔴 **`restore` 와 `save` 를 분리하고 `save` 에 `if: always()` 를 건다.** §15.5 가 관찰한
+   "actions/cache 로 감싸는 방식은 캐시가 차지 않았다"는 **정확한 관찰이었지만 결론이 틀렸다** —
+   원인은 방식이 아니라 **통합 `actions/cache` 액션이 job 성공 시에만 저장한다**는 점이었다.
+   `configure` 에서 매번 죽었으니 영원히 저장되지 않았던 것이다. `always()` 를 걸면 실패한 런도
+   그때까지 구운 바이너리를 저장하고, 캐시는 실패를 반복하면서도 점진적으로 찬다
+2. **vcpkg 클론을 `builtin-baseline` SHA 로 고정한다.** 기존에는 master HEAD 를 클론해 포트 트리가
+   `vcpkg.json` 의 baseline 과 어긋났다 — §15.2 의 재현성 명제를 클론 층에서 깨는 것이고, 캐시
+   키가 가리키는 대상도 런마다 달라진다
+3. **`VCPKG_INSTALLED_DIR` 를 preset 간 공유한다** (`CMakePresets.json` 의 `base`,
+   `${sourceDir}/build/vcpkg_installed`). 설치 2회 → 1회. 🔴 `CMakePresets.json` 은 JSON 이라
+   주석을 달 수 없다 — **그 한 줄의 근거는 이 문단이 유일한 기록이다.** triplet 별 하위 디렉터리
+   구조라 Windows/Linux 가 같은 경로를 써도 섞이지 않는다
+
+동반: `concurrency.cancel-in-progress` 로 밀려난 런을 취소하고, **docs-only 푸시는 C++ 절반을
+건너뛴다.** 🔴 후자는 **판단 불가 시 전체 실행으로 폴백**한다(force push · 최초 푸시 · PR 이벤트).
+잘못 건너뛴 게이트는 없는 게이트보다 나쁘다 — 아무도 컴파일하지 않은 코드에 초록을 보고하기
+때문이다. 🔴 `gen:check` 와 `core-purity` 는 **docs-only 푸시에서도 항상 돈다.**
+
+**예상 효과**: 현재 12분(실패) / 20분대(성공 시) → 첫 런 ~10분(캐시 적재) → **이후 런 2~4분**.
+
+🔴 **이 예상은 아직 실측이 아니다.** 초록 런의 실측치로 이 문단을 교체하라.
+
+#### 15.5c 아직 검증되지 않은 것 (§15.5a · §15.5b 공통)
+
+🔴 §15.5a 의 `libmariadb` 실측은 **Windows 로컬**이고, 실패한 것은 **Linux 러너**다. §15.5b 의
+캐시 개편은 **아직 한 번도 러너에서 돌지 않았다.** 그리고 `configure` 이후 단계(format-check ·
+clang-tidy · build ×2 · test)는 러너에서 **한 번도 실행된 적이 없다** — 특히 `clang-tidy` 는 로컬
+게이트가 아예 건너뛰는 단계이므로(§15.4) 네이밍 · `bugprone` · `modernize` 위반이 **거기서 처음
+한꺼번에 드러난다.**
+
+초록 런 id 를 적기 전까지 §15.5a 와 §15.5b 는 "고쳤다"가 아니라 **"원인을 제거하고 다음 실패를
+노출시키기로 했다"**이다. 🔴 이 문장을 지우는 조건은 초록 런 하나뿐이며, 그 전에 지우면 문서가
+거짓을 말하게 된다.
 
 ---
 

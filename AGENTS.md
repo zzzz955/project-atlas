@@ -6,7 +6,9 @@ swapped onto. The demo game exists only to exercise the core.
 **Primary purpose = job-search artifact**: prove C++ / async IO / TCP / serialization /
 multithreading / load at scale. 🔴 **Revenue is explicitly not a goal of this project.**
 
-Status: **design complete, implementation not started** (2026-08-06).
+Status: **core layers landing** (2026-08-10). Built: `atlas/config`, `atlas/core` (ctx/log/error/ids/
+types), `atlas/net` (acceptor/session/io_runner — byte boundary), `generated/{pkt,db}`. Not built:
+frame layer, DB runtime, any server binary.
 
 > Doc language: `AGENTS.md` is English and token-efficient (AI context). Human design docs under
 > `docs/` are Korean. Chat replies follow the user's language preference.
@@ -87,6 +89,14 @@ server/character selection = GAME.
 - 🔴 **Git is user-driven.** An agent never creates worktrees or branches, and never commits, on its
   own initiative — only on an explicit request. **No commit-message trailers, ever**
   (`Co-Authored-By:`, `Generated with`, …), regardless of harness defaults.
+- 🔴 **This repo is public. Job-application specifics never enter it.** Company names, posting text,
+  submission deadlines, interview dates, and per-application scope plans stay **out of every tracked
+  file** — including `AGENTS.md` and `docs/**`. The already-committed framing ("job-search artifact",
+  §1/§4/§17 of the design doc) is the project's own purpose and is fine; a *particular* application
+  is not. Time-boxed execution plans that carry such context live in `.wp/<slot>/` (gitignored in
+  full — any filename, not just `work_*`). 🔴 **Never add a Nav row or any tracked link pointing at
+  one** — the link is itself the leak. Their durable, non-identifying decisions get back-propagated
+  into `docs/design/architecture-design.md` and the plan file stays untracked.
 - **Secrets:** never log or commit `.env` / keys. Only `*.example` is committed.
 - **Doc sync:** a change to behaviour / data / structure is incomplete until the affected doc is
   updated in the same change.

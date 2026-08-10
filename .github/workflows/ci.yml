@@ -1,5 +1,5 @@
 # 🔴 PARTIALLY VERIFIED - and every verified run so far FAILED.
-# History (architecture-design.md §15.5 has the full logs and the dependency-tree measurement):
+# History (architecture-design.md §15.5 / §15.5a / §15.5b have the full logs and measurements):
 #   run 31142102019 : failed at `configure` - github.com/boostorg/polygon 500 + an ncurses hash
 #                     mismatch, both pulled in by libmysql (92 transitive ports)
 #   re-run          : failed at `configure` again, at a DIFFERENT port (boostorg/core 500)
@@ -8,9 +8,15 @@
 #                     the Sun RPC headers from glibc; libmysql needs libtirpc-dev.
 #                     🔴 server/Dockerfile already installed libtirpc-dev and said why - this file
 #                     never learned it. The two Linux build recipes had drifted.
-# Three failures, three different causes, one common source: libmysql. §15.5 (2026-08-10) therefore
-# swaps the DB client to `libmariadb` (92 transitive ports -> 4) instead of papering over the
-# symptom with one more apt package. Dep count is still 6 (§15.2).
+# Three failures, three different causes, one common source: libmysql. §15.5a (2026-08-10) swaps the
+# DB client to `libmariadb` (92 transitive ports -> 4). Dep count is still 6 (§15.2).
+#
+# 🔴 THE BINARY CACHE HAS NEVER WORKED. Measured on run 31153396554 (§15.5b): vcpkg prints
+#     "The 'x-gha' binary caching backend has been removed"
+# and carries on with NO cache at all - `clear;` had also disabled the default local one. Timings
+# from that run: attempt 1 = 9m18s (102 ports built from source), attempts 2 and 3 = ~21s each
+# (they reused the on-disk tree, not a cache). So every run pays the full source build once.
+# This revision replaces x-gha with the `files` backend wrapped in actions/cache.
 #
 # Everything after `configure` - format-check, clang-tidy, the two builds, ctest - has still never
 # executed on a runner. `server/scripts/ci-gate.ps1` remains the gate that is actually exercised.
@@ -24,16 +30,57 @@ on:
   push:
   pull_request:
 
+# 🔴 A superseded run is wasted runner time and a misleading red X on an old commit. Only the newest
+# push per ref survives. Never add `cancel-in-progress` to a deploy workflow - here nothing is
+# deployed, so cancelling is free.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gate:
     runs-on: ubuntu-24.04
     env:
-      # vcpkg's own GitHub Actions binary cache. It replaces the cache-action step that used to
-      # wrap ~/.cache/vcpkg/archives and never filled: the first run missed and then died in
-      # `configure`, so the post-job save never stored a usable archive set (§15.5).
-      VCPKG_BINARY_SOURCES: 'clear;x-gha,readwrite'
+      # 🔴 NOT x-gha - that backend was removed from vcpkg and silently did nothing (§15.5b).
+      # The `files` backend writes real archives to a directory, and actions/cache carries that
+      # directory between runs.
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite'
     steps:
+      # fetch-depth 0: the docs-only skip below diffs github.event.before..GITHUB_SHA, which needs
+      # both commits present. This repo is small enough that a full fetch is cheap.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 🔴 Decides whether the C++ half of the gate runs at all. A docs-only push does not need a
+      # 60-port vcpkg install to prove anything.
+      # 🔴 FAILS SAFE: force push, first push, shallow history, or any pull_request event -> the
+      # base commit is unusable, so we run EVERYTHING. A skip gate that guesses wrong is worse than
+      # no skip gate, because it reports green for code nobody compiled.
+      - name: decide whether C++ steps run
+        id: scope
+        run: |
+          set -u
+          base="${{ github.event.before }}"
+          if [ "${{ github.event_name }}" != "push" ] \
+             || [ -z "${base}" ] \
+             || [ "${base}" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "reason=base commit unusable (${{ github.event_name }}) - running everything"
+            echo "cpp=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "${base}" "${GITHUB_SHA}")"
+          echo "changed files:"
+          echo "${changed}"
+          # Anything outside docs/ counts as C++-relevant. Deliberately conservative: a change to
+          # .github/, tools/, package.json or server/ all force the full gate.
+          if printf '%s\n' "${changed}" | grep -qvE '^docs/'; then
+            echo "cpp=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs-only push - skipping the C++ half of the gate"
+            echo "cpp=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-node@v4
         with:
@@ -45,6 +92,8 @@ jobs:
 
       # 🔴 Mechanical enforcement of "never edit generated output": if server/generated/** does not
       # match what the generators produce from the current inputs, the gate stops here.
+      # 🔴 This one runs on EVERY push, docs-only included - the drift it guards against is cheap to
+      # check and expensive to miss.
       - name: gen:check (generated-output drift)
         run: npm run gen:check
 
@@ -53,9 +102,12 @@ jobs:
       - name: core-purity (core must not know the game)
         run: npm run check:core-purity
 
+      # ---------------------------------------------------------------- C++ half (skippable)
+
       # clang-tidy's ExcludeHeaderFilterRegex (used by .clang-tidy to skip generated/) requires
       # clang-tidy >= 19 - below that the key is silently ignored. cpp-style.md §7.1.
       - name: install toolchain
+        if: steps.scope.outputs.cpp == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build clang-format-19 clang-tidy-19 \
@@ -63,30 +115,60 @@ jobs:
           sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100
           sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
 
-      # The x-gha backend talks to the Actions cache service and needs ACTIONS_CACHE_URL /
-      # ACTIONS_RUNTIME_TOKEN, which are NOT exported to plain `run:` steps. This github-script
-      # export is the form vcpkg documents for GitHub Actions.
-      - name: export GitHub Actions cache credentials
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      - name: bootstrap vcpkg
+      # The cache key has to change when the port set changes AND when the port tree changes.
+      # vcpkg.json carries both: the dependency list and the builtin-baseline SHA that pins the tree.
+      - name: compute vcpkg cache key
+        if: steps.scope.outputs.cpp == 'true'
+        id: vcpkgkey
         run: |
-          git clone https://github.com/microsoft/vcpkg.git server/vcpkg
+          set -eu
+          baseline="$(node -p "require('./server/vcpkg.json')['builtin-baseline']")"
+          echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
+          echo "key=vcpkg-x64-linux-${baseline}-${{ hashFiles('server/vcpkg.json') }}" >> "$GITHUB_OUTPUT"
+
+      # 🔴 restore and save are SPLIT on purpose. The combined actions/cache action only saves when
+      # the job succeeds, which is exactly why the previous attempt never filled: the run died in
+      # `configure` every time, so nothing was ever stored and the next run started from zero again
+      # (§15.5). With a `save` guarded by `if: always()`, even a failed run banks the ports it did
+      # manage to build, and the cache fills across attempts instead of never.
+      - name: restore vcpkg binary cache
+        if: steps.scope.outputs.cpp == 'true'
+        id: vcpkgcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-binary-cache
+          key: ${{ steps.vcpkgkey.outputs.key }}
+          restore-keys: |
+            vcpkg-x64-linux-${{ steps.vcpkgkey.outputs.baseline }}-
+            vcpkg-x64-linux-
+
+      # 🔴 The clone is pinned to the SAME commit as vcpkg.json's builtin-baseline. Cloning master
+      # meant the port tree drifted from the pinned baseline between runs, which both weakened
+      # reproducibility (§15.2's whole point) and made the cache key describe something that was no
+      # longer true.
+      - name: bootstrap vcpkg
+        if: steps.scope.outputs.cpp == 'true'
+        run: |
+          set -eu
+          mkdir -p "${{ github.workspace }}/.vcpkg-binary-cache"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git server/vcpkg
+          git -C server/vcpkg checkout --detach "${{ steps.vcpkgkey.outputs.baseline }}"
           server/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
       # Configure both trees first: clang-tidy needs the compile_commands.json that only a
       # configured Ninja tree emits.
       #
-      # 🔴 Retried up to 3 times with exponential backoff, because a single upstream 500 out of
-      # ~100 source-built ports killed both previous runs (§15.5). 🔴 This is a bounded retry, not
-      # a loop that runs until it succeeds - after attempt 3 the step fails and the gate fails.
+      # 🔴 Both presets now share one VCPKG_INSTALLED_DIR (CMakePresets.json), so the ~60 ports are
+      # installed ONCE instead of once per preset. Unity build is a compiler setting and does not
+      # change a single dependency, so the two trees were always installing identical port sets.
+      #
+      # 🔴 Retried up to 3 times with exponential backoff, because a single upstream 500 out of the
+      # source-built ports killed two earlier runs (§15.5). 🔴 This is a bounded retry, not a loop
+      # that runs until it succeeds - after attempt 3 the step fails and the gate fails.
       # 🔴 Every swallowed failure is printed (attempt number + which cmake preset died), so a run
       # that only passes on attempt 3 cannot be mistaken for a healthy one.
       - name: configure (retry x3)
+        if: steps.scope.outputs.cpp == 'true'
         working-directory: server
         run: |
           set -u
@@ -119,7 +201,21 @@ jobs:
             attempt=$((attempt + 1))
           done
 
+      # 🔴 always(): banks whatever was built even when configure died. See the split-cache note
+      # above - this single line is the difference between a cache that fills and one that never does.
+      # 🔴 Skipped on an EXACT key hit: the entry is already complete for this vcpkg.json+baseline,
+      # and re-saving the same key only produces a "another job may be creating this cache" warning
+      # on every run - noise that trains you to ignore the cache step's output. A restore-keys
+      # (prefix) hit still reports cache-hit == 'false', so a partially-warm run does save.
+      - name: save vcpkg binary cache
+        if: always() && steps.scope.outputs.cpp == 'true' && steps.vcpkgkey.outputs.key != '' && steps.vcpkgcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.vcpkg-binary-cache
+          key: ${{ steps.vcpkgkey.outputs.key }}
+
       - name: format-check
+        if: steps.scope.outputs.cpp == 'true'
         run: clang-format --style=file --dry-run -Werror $(find server/atlas server/tests -name '*.h' -o -name '*.cpp')
 
       # 🔴 This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
@@ -127,17 +223,21 @@ jobs:
       # Here clang produces both the compile database and the PCH, so the step is sound.
       # cpp-style.md §7.3 · architecture-design.md §15.4.
       - name: clang-tidy
+        if: steps.scope.outputs.cpp == 'true'
         run: clang-tidy -p server/build/linux-ci --warnings-as-errors='*' --quiet $(find server/atlas server/tests -name '*.cpp')
 
       - name: build (unity ON)
+        if: steps.scope.outputs.cpp == 'true'
         working-directory: server
         run: cmake --build --preset linux-release
 
       # 🔴 The gate that catches missing #includes and ODR collisions (§15.1, cost 4).
       - name: build (unity OFF)
+        if: steps.scope.outputs.cpp == 'true'
         working-directory: server
         run: cmake --build --preset linux-ci
 
       - name: test
+        if: steps.scope.outputs.cpp == 'true'
         working-directory: server
         run: ctest --preset linux-ci --output-on-failure
