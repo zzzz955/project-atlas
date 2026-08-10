@@ -56,6 +56,9 @@ SecretConfig SecretConfig::FromEnvironment() {
     config.db_user = ReadSecretString("ATLAS_DB_USER");
     config.db_password = ReadSecretString("ATLAS_DB_PASSWORD");
     config.jwks_url = ReadSecretString("ATLAS_JWKS_URL");
+    // 🔴 Exact "1" only. An opt-out of certificate verification must not be reachable by "true",
+    // "yes" or a stray space — every spelling this does not accept keeps verification on.
+    config.db_tls_no_verify = ReadSecretString("ATLAS_DB_TLS_NO_VERIFY") == "1";
 
     const std::string port = ReadSecretString("ATLAS_DB_PORT");
     if (!port.empty()) {

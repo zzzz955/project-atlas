@@ -21,6 +21,12 @@ struct SecretConfig {
     std::string db_password;
     std::string jwks_url;
 
+    // `ATLAS_DB_TLS_NO_VERIFY` — not a secret, but it belongs to the same per-deployment axis as
+    // the DB host, and server.ini cannot carry it because that file is baked into the image (§5.4).
+    // 🔴 Defaults to false = verify. Only the literal string "1" turns it on, so a typo relaxes
+    // nothing. What it costs is written on DbConnectionConfig::tls_no_verify.
+    bool db_tls_no_verify{false};
+
     // Keys are read from the process environment (docker compose / `.env`). An unset key is an
     // empty value rather than a failure: this layer only transports the secrets, and the layer that
     // actually needs a DB connection is the one that gets to decide what is mandatory.
