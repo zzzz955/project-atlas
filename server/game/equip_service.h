@@ -24,6 +24,11 @@ enum class EquipResult : atlas::UInt8 {
     ItemNotFound,
     NotOwned,  // 🔴 §8.2 layer 3, server authority: the item exists, but not for this character
     CharacterNotFound,
+    // 🔴 §8.2 layer 3 again, now against the STATIC data (generated/info/item_info.h). The row is
+    // real and it is yours; what the server rejects is the claim about what the item IS. Appended
+    // rather than inserted: this enumerator is the response byte on the wire (§8.5).
+    UnknownItem,   // no such item_id in shared/datas/item.csv
+    SlotMismatch,  // the item exists, but not for the slot the request names
 };
 
 [[nodiscard]] std::string_view DescribeEquipResult(EquipResult result) noexcept;

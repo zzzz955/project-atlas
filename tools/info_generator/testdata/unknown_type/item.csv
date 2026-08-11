@@ -1,0 +1,5 @@
+id,name,slot
+CS,C,CS
+uint32,string,int
+PK,NN,NN
+1001,Rusty Sword,1

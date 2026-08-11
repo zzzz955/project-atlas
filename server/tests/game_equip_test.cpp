@@ -44,6 +44,10 @@
 //   * Two concurrent equips on ONE character serialise, so the slot never ends up holding two.
 //   * A request for an item the session's character does not own is refused rather than quietly
 //     scoped away (§8.2 layer 3, server authority).
+//   * The same layer, now with something to check against: an `item_id` shared/datas/item.csv does
+//     not define, and an item claimed for a slot its definition forbids, are both refused — and
+//     refused with a RESPONSE, leaving the connection open, because a valid frame carrying a wrong
+//     request is not a framing violation.
 //   * A real client socket can drive load -> equip -> disconnect -> reconnect and see the equipment
 //     still there.
 //
@@ -83,11 +87,24 @@ constexpr UInt64 kAccountUid = 9100;
 constexpr UInt64 kCharacterA = 6100;
 constexpr UInt64 kCharacterB = 6200;
 
-// Character A holds two items; character B holds one, which A will be refused.
+// Character A holds four items; character B holds one, which A will be refused.
 constexpr UInt64 kItemWorn = 7001;
 constexpr UInt64 kItemSpare = 7002;
+constexpr UInt64 kItemCharm = 7003;
+constexpr UInt64 kItemUndefined = 7004;
 constexpr UInt64 kItemOfOther = 7900;
 constexpr UInt64 kItemMissing = 7999;
+
+// 🔴 `item_id` VALUES OUT OF shared/datas/item.csv, NOT ARBITRARY NUMBERS ANY MORE. Since
+// info_generator landed, the equip path looks each one up in the generated table and refuses what
+// it cannot find (§8.2 layer 3), so a test that seeded a made-up id would be testing the refusal
+// path while believing it tested the happy one.
+constexpr UInt32 kRustySwordId = 1001;  // slot 1, weapon
+constexpr UInt32 kIronSwordId = 1002;   // slot 1, weapon
+constexpr UInt32 kLuckyCharmId = 3001;  // slot 3, trinket
+// 🔴 Deliberately absent from item.csv: a row that exists in the database and names a definition
+// that does not. That is data drift, not a hostile client, and the server must answer the same way.
+constexpr UInt32 kUndefinedItemId = 9999;
 
 constexpr std::string_view kDeleteItemsSql = "DELETE FROM `character_items` WHERE `server_id` = ?";
 constexpr std::string_view kDeleteCharactersSql = "DELETE FROM `characters` WHERE `server_id` = ?";
@@ -236,16 +253,21 @@ protected:
 
     // Character A wears kItemWorn in the weapon slot and carries kItemSpare loose, so every case
     // below starts from a state where the slot is genuinely occupied — an equip into an empty slot
-    // would never exercise write 1.
+    // would never exercise write 1. 🔴 Both are WEAPONS: item.csv now decides where an item may go,
+    // so two items that contend for one slot have to be two items of that slot.
     static void Seed(atlas::Connection& connection) {
         InsertCharacter(connection, kCharacterA, "atlas-a");
         InsertCharacter(connection, kCharacterB, "atlas-b");
-        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterA), kItemWorn, 11,
-                   EquipSlot::Weapon);
-        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterA), kItemSpare, 12,
-                   EquipSlot::None);
-        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterB), kItemOfOther, 13,
-                   EquipSlot::None);
+        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterA), kItemWorn,
+                   kRustySwordId, EquipSlot::Weapon);
+        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterA), kItemSpare,
+                   kIronSwordId, EquipSlot::None);
+        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterA), kItemCharm,
+                   kLuckyCharmId, EquipSlot::None);
+        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterA), kItemUndefined,
+                   kUndefinedItemId, EquipSlot::None);
+        InsertItem(connection, static_cast<atlas::CharacterId>(kCharacterB), kItemOfOther,
+                   kRustySwordId, EquipSlot::None);
     }
 
     static EquipService::Request RequestFor(UInt64 item_uid, EquipSlot slot,
@@ -318,6 +340,9 @@ TEST_F(GameEquipTest, AFailureAtTheThirdWriteRollsBackAndLeavesTheInvariantIntac
 // item", and a plain SELECT under REPEATABLE READ takes no row lock — so InnoDB would not stop it.
 // The per-character lock is what does. The first caller is HELD INSIDE its transaction until the
 // second has entered Equip, which makes the overlap real instead of hoped for.
+//
+// 🔴 Both threads drive the WEAPON slot because that is the slot item.csv gives both items. The
+// contended slot changed with this test; the contention did not.
 TEST_F(GameEquipTest, ConcurrentEquipsOnOneCharacterSerialiseAndTheSlotNeverHoldsTwo) {
     EquipService service;
 
@@ -335,7 +360,7 @@ TEST_F(GameEquipTest, ConcurrentEquipsOnOneCharacterSerialiseAndTheSlotNeverHold
             atlas::Ctx ctx;
             ctx.trace_id = 6003;
             first_result = service
-                               .Equip(ctx, worker, RequestFor(kItemWorn, EquipSlot::Armor),
+                               .Equip(ctx, worker, RequestFor(kItemWorn, EquipSlot::Weapon),
                                       [&] {
                                           first_inside.store(true);
                                           // Bounded, so a regression fails instead of hanging the
@@ -358,7 +383,7 @@ TEST_F(GameEquipTest, ConcurrentEquipsOnOneCharacterSerialiseAndTheSlotNeverHold
             atlas::Ctx ctx;
             ctx.trace_id = 6004;
             second_result =
-                service.Equip(ctx, worker, RequestFor(kItemSpare, EquipSlot::Armor)).result;
+                service.Equip(ctx, worker, RequestFor(kItemSpare, EquipSlot::Weapon)).result;
         } catch (...) {
             failed.store(true);
         }
@@ -374,11 +399,11 @@ TEST_F(GameEquipTest, ConcurrentEquipsOnOneCharacterSerialiseAndTheSlotNeverHold
     atlas::Connection reader(config_);
     // 🔴 The invariant, not the winner: the final state may be either item, but it may never be
     // both. A test that pinned the winner would be testing the scheduler.
-    EXPECT_EQ(CountInSlot(reader, kCharacterA, EquipSlot::Armor), std::size_t{1});
+    EXPECT_EQ(CountInSlot(reader, kCharacterA, EquipSlot::Weapon), std::size_t{1});
     const UInt8 worn = SlotOf(reader, kItemWorn);
     const UInt8 spare = SlotOf(reader, kItemSpare);
-    EXPECT_NE(worn == static_cast<UInt8>(EquipSlot::Armor),
-              spare == static_cast<UInt8>(EquipSlot::Armor));
+    EXPECT_NE(worn == static_cast<UInt8>(EquipSlot::Weapon),
+              spare == static_cast<UInt8>(EquipSlot::Weapon));
 }
 
 // ── Case 4 — an item that does not exist ─────────────────────────────────────────────────────
@@ -422,6 +447,66 @@ TEST_F(GameEquipTest, EquippingAnotherCharactersItemIsRefused) {
     EXPECT_EQ(SlotOf(reader, kItemOfOther), static_cast<UInt8>(EquipSlot::None));
     EXPECT_EQ(SlotOf(reader, kItemWorn), static_cast<UInt8>(EquipSlot::Weapon));
     EXPECT_EQ(CountInSlot(reader, kCharacterB, EquipSlot::Weapon), std::size_t{0});
+}
+
+// ── Case 6 — an item whose definition does not exist ─────────────────────────────────────────
+//
+// 🔴 §8.2 layer 3, against the STATIC data. The row is in the database and it belongs to the
+// requesting character — every check that existed before this slice passes. What is wrong is the
+// `item_id`: shared/datas/item.csv does not define it, so nothing in the game can say what the
+// item is or where it goes, and the server refuses rather than writing a slot it cannot justify.
+TEST_F(GameEquipTest, EquippingAnItemWithNoDefinitionIsRefusedAndWritesNothing) {
+    EquipService service;
+    atlas::Ctx ctx;
+    ctx.trace_id = 6007;
+
+    atlas::Connection worker(config_);
+    const EquipService::Outcome outcome =
+        service.Equip(ctx, worker, RequestFor(kItemUndefined, EquipSlot::Weapon));
+
+    EXPECT_EQ(outcome.result, EquipResult::UnknownItem);
+    // The refusal stands in FRONT of the transaction, so there is nothing to roll back.
+    EXPECT_EQ(ctx.tx_state, atlas::TxState::None);
+
+    atlas::Connection reader(config_);
+    EXPECT_EQ(SlotOf(reader, kItemUndefined), static_cast<UInt8>(EquipSlot::None));
+    EXPECT_EQ(SlotOf(reader, kItemWorn), static_cast<UInt8>(EquipSlot::Weapon));
+    EXPECT_FALSE(LastLoginOf(reader, kCharacterA).has_value());
+}
+
+// ── Case 7 — the right item, the wrong slot ──────────────────────────────────────────────────
+//
+// 🔴 THE CASE THAT ONLY EXISTS BECAUSE THE STATIC DATA DOES. `equip_slot` used to be whatever byte
+// the packet carried: a client could wear a trinket as a weapon and the server had nothing to
+// disagree with. item.csv gives `item_id -> allowed slot`, and that is the first thing in this
+// server able to contradict a well-formed request about what an item IS.
+TEST_F(GameEquipTest, EquippingAnItemIntoASlotItsDefinitionForbidsIsRefused) {
+    EquipService service;
+    atlas::Ctx ctx;
+    ctx.trace_id = 6008;
+
+    atlas::Connection worker(config_);
+    // kItemCharm is slot 3 (trinket) in item.csv. The request names the weapon slot.
+    const EquipService::Outcome outcome =
+        service.Equip(ctx, worker, RequestFor(kItemCharm, EquipSlot::Weapon));
+
+    EXPECT_EQ(outcome.result, EquipResult::SlotMismatch);
+    EXPECT_EQ(ctx.tx_state, atlas::TxState::None);
+
+    atlas::Connection reader(config_);
+    EXPECT_EQ(SlotOf(reader, kItemCharm), static_cast<UInt8>(EquipSlot::None));
+    // 🔴 And the occupant of the slot the request aimed at is untouched. A refusal that had already
+    // run write 1 would have emptied the weapon slot on its way to saying no.
+    EXPECT_EQ(SlotOf(reader, kItemWorn), static_cast<UInt8>(EquipSlot::Weapon));
+    EXPECT_EQ(CountInSlot(reader, kCharacterA, EquipSlot::Weapon), std::size_t{1});
+
+    // The same item into the slot its definition DOES name succeeds, so the refusal above was
+    // about the slot and not about the item being unusable.
+    atlas::Ctx allowed_ctx;
+    allowed_ctx.trace_id = 6009;
+    EXPECT_EQ(service.Equip(allowed_ctx, worker, RequestFor(kItemCharm, EquipSlot::Trinket)).result,
+              EquipResult::Ok);
+    EXPECT_EQ(SlotOf(reader, kItemCharm), static_cast<UInt8>(EquipSlot::Trinket));
 }
 
 // ── End to end, over a real socket ───────────────────────────────────────────────────────────
@@ -568,12 +653,12 @@ TEST_F(GameEquipTest, AClientLoadsEquipsReconnectsAndTheEquipmentIsStillThere) {
         EXPECT_EQ(loaded.character_id, kCharacterA);
         EXPECT_EQ(loaded.account_uid, kAccountUid);
         EXPECT_EQ(loaded.name, "atlas-a");
-        ASSERT_EQ(loaded.items.size(), std::size_t{2});
-        ASSERT_NE(FindItem(loaded, kItemSpare), nullptr);
-        EXPECT_EQ(FindItem(loaded, kItemSpare)->slot, EquipSlot::None);
+        ASSERT_EQ(loaded.items.size(), std::size_t{4});
+        ASSERT_NE(FindItem(loaded, kItemCharm), nullptr);
+        EXPECT_EQ(FindItem(loaded, kItemCharm)->slot, EquipSlot::None);
 
         client.Send(atlas_demo::kOpEquipRequest,
-                    EquipRequestPayload(kItemSpare, EquipSlot::Trinket));
+                    EquipRequestPayload(kItemCharm, EquipSlot::Trinket));
         const atlas::Frame equip_response = client.Receive();
         ASSERT_EQ(equip_response.opcode, atlas_demo::kOpEquipResponse);
 
@@ -587,20 +672,42 @@ TEST_F(GameEquipTest, AClientLoadsEquipsReconnectsAndTheEquipmentIsStillThere) {
         ASSERT_TRUE(atlas::generated::ReadLe(cursor, echoed_slot));
         ASSERT_TRUE(atlas::generated::ReadLe(cursor, unequipped));
         EXPECT_EQ(code, static_cast<UInt8>(EquipResult::Ok));
-        EXPECT_EQ(echoed_uid, kItemSpare);
+        EXPECT_EQ(echoed_uid, kItemCharm);
         EXPECT_EQ(echoed_slot, static_cast<UInt8>(EquipSlot::Trinket));
         // The trinket slot was empty, so nothing came off.
         EXPECT_EQ(unequipped, UInt64{0});
 
-        // 🔴 A refusal the frame layer cannot see: character A asking for character B's item over a
-        // perfectly valid frame. The server is the only thing that can say no (§8.2 layer 3).
-        client.Send(atlas_demo::kOpEquipRequest,
-                    EquipRequestPayload(kItemOfOther, EquipSlot::Weapon));
-        const atlas::Frame refused = client.Receive();
-        std::span<const Byte> refusal(refused.payload);
-        UInt8 refusal_code = 0;
-        ASSERT_TRUE(atlas::generated::ReadLe(refusal, refusal_code));
-        EXPECT_EQ(refusal_code, static_cast<UInt8>(EquipResult::NotOwned));
+        // 🔴 THREE REFUSALS OVER ONE LIVE CONNECTION, AND THE CONNECTION IS THE ASSERTION.
+        // None of these is a framing violation: every frame below has a correct length, a correct
+        // sequence number and a correct checksum, so §8.1 has no objection and §8.2 layer 1 and 2
+        // both pass. Only server authority (layer 3) can reject them — and its answer is a failure
+        // RESPONSE, not a close. The proof that the session survived is that the next request on
+        // the same socket is still answered; a `Receive()` on a closed connection would throw.
+        const auto refuse = [&](UInt64 item_uid, EquipSlot slot) {
+            client.Send(atlas_demo::kOpEquipRequest, EquipRequestPayload(item_uid, slot));
+            const atlas::Frame refused = client.Receive();
+            EXPECT_EQ(refused.opcode, atlas_demo::kOpEquipResponse);
+            std::span<const Byte> refusal(refused.payload);
+            UInt8 refusal_code = 0;
+            EXPECT_TRUE(atlas::generated::ReadLe(refusal, refusal_code));
+            return refusal_code;
+        };
+
+        // Character A asking for character B's item.
+        EXPECT_EQ(refuse(kItemOfOther, EquipSlot::Weapon),
+                  static_cast<UInt8>(EquipResult::NotOwned));
+        // A row of A's own whose item_id item.csv does not define.
+        EXPECT_EQ(refuse(kItemUndefined, EquipSlot::Weapon),
+                  static_cast<UInt8>(EquipResult::UnknownItem));
+        // A's own trinket, claimed as a weapon.
+        EXPECT_EQ(refuse(kItemCharm, EquipSlot::Weapon),
+                  static_cast<UInt8>(EquipResult::SlotMismatch));
+
+        // Still talking, and still correct: the session took three refusals and kept its identity.
+        client.Send(atlas_demo::kOpCharacterLoadRequest, LoadRequestPayload(kCharacterA));
+        const LoadedCharacter after_refusals = ParseLoadResponse(client.Receive());
+        ASSERT_EQ(after_refusals.result, static_cast<UInt8>(atlas_demo::LoadResult::Ok));
+        EXPECT_EQ(after_refusals.character_id, kCharacterA);
     }  // ← the client disconnects here
 
     ASSERT_TRUE(WaitUntil([&] { return server.LiveSessionCount() == 0; }));
@@ -613,9 +720,9 @@ TEST_F(GameEquipTest, AClientLoadsEquipsReconnectsAndTheEquipmentIsStillThere) {
         const LoadedCharacter loaded = ParseLoadResponse(reconnected.Receive());
 
         ASSERT_EQ(loaded.result, static_cast<UInt8>(atlas_demo::LoadResult::Ok));
-        ASSERT_NE(FindItem(loaded, kItemSpare), nullptr);
-        EXPECT_EQ(FindItem(loaded, kItemSpare)->slot, EquipSlot::Trinket);
-        // The weapon slot is untouched: the refused request wrote nothing.
+        ASSERT_NE(FindItem(loaded, kItemCharm), nullptr);
+        EXPECT_EQ(FindItem(loaded, kItemCharm)->slot, EquipSlot::Trinket);
+        // The weapon slot is untouched: the three refused requests wrote nothing.
         ASSERT_NE(FindItem(loaded, kItemWorn), nullptr);
         EXPECT_EQ(FindItem(loaded, kItemWorn)->slot, EquipSlot::Weapon);
     }

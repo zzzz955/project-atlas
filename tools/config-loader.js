@@ -88,6 +88,8 @@ function load() {
     },
     dataGen: {
       serverTargets: csv(requiredIni(ini, iniPath, 'data-gen', 'server_targets')),
+      cppInfoOutputDir: requiredPath(ini, iniPath, 'data-gen', 'cpp_info_output_dir'),
+      cppNamespace: requiredIni(ini, iniPath, 'data-gen', 'cpp_namespace'),
     },
     dbGen: {
       schemaPath: requiredPath(ini, iniPath, 'db-gen', 'schema'),

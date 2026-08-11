@@ -19,6 +19,7 @@
 #include "game/inventory.h"
 #include "generated/db/character_items_row.h"
 #include "generated/db/characters_row.h"
+#include "generated/info/item_info.h"
 
 namespace atlas_demo {
 
@@ -42,6 +43,10 @@ std::string_view DescribeEquipResult(EquipResult result) noexcept {
             return "item belongs to another character";
         case EquipResult::CharacterNotFound:
             return "no such character";
+        case EquipResult::UnknownItem:
+            return "no such item definition";
+        case EquipResult::SlotMismatch:
+            return "item does not go in that slot";
     }
     return "unknown";
 }
@@ -84,6 +89,27 @@ EquipService::Outcome EquipService::Equip(atlas::Ctx& ctx, atlas::Connection& co
         ATLAS_LOG_WARN("equip refused: item {} belongs to character {}, not {}", target.item_uid_,
                        atlas::IdValue(target.character_id_), atlas::IdValue(request.character_id));
         return {.result = EquipResult::NotOwned, .unequipped_item_uid = 0};
+    }
+
+    // ── Server authority against the STATIC data (§8.2 layer 3, second half) ─────────────────
+    // 🔴 The row is real and it is this character's. What is checked here is the CLAIM about what
+    // the item IS, and until item.csv existed nothing in this server could contradict it: the slot
+    // came straight out of the packet and `item_id` was a number nobody compared to anything.
+    // 🔴 REFUSAL, NOT DISCONNECT. A §8.1 framing violation (a false length, a regressing seq)
+    // closes the connection because the byte stream can no longer be trusted. This is the other
+    // case — a perfectly valid frame carrying a wrong request — and the answer to it is a failure
+    // response on a connection that stays open.
+    const atlas::generated::ItemInfoRow* definition =
+        atlas::generated::FindItemInfo(target.item_id_);
+    if (definition == nullptr) {
+        ATLAS_LOG_WARN("equip refused: item {} has item_id {}, which item.csv does not define",
+                       target.item_uid_, target.item_id_);
+        return {.result = EquipResult::UnknownItem, .unequipped_item_uid = 0};
+    }
+    if (definition->slot_ != static_cast<atlas::UInt8>(request.slot)) {
+        ATLAS_LOG_WARN("equip refused: item_id {} belongs in slot {}, not {}", target.item_id_,
+                       static_cast<atlas::UInt16>(definition->slot_), DescribeSlot(request.slot));
+        return {.result = EquipResult::SlotMismatch, .unequipped_item_uid = 0};
     }
 
     const std::array<DbValue, 2> character_lookup{DbValue{static_cast<UInt64>(request.server_id)},
