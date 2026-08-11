@@ -158,12 +158,14 @@ bool RedisConnection::WaitUntilReady(Duration timeout) {
         Execute(Ctx{}, RedisCommand{.verb = "PING", .args = {}},
                 [answered](const RedisResult& result) { answered->set_value(result.ok); });
 
-        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks) — `answered` is not leaked: its
-        // second reference lives in the handler above, and the analyzer stops following that
-        // reference where the handler is posted to the strand, so the control block looks orphaned
-        // on this return path. The shared_ptr is required rather than incidental — when the probe
-        // times out this function returns while the handler is still outstanding, so a promise on
-        // this frame would be a dangling write.
+        // `answered` is not leaked: its second reference lives in the handler above, and the
+        // analyzer stops following that reference where the handler is posted to the strand, so
+        // the control block looks orphaned on this return path. The shared_ptr is required rather
+        // than incidental — when the probe times out this function returns while the handler is
+        // still outstanding, so a promise on this frame would be a dangling write.
+        // 🔴 The marker below is the last line before the code: it covers one line only, and a
+        // comment would consume it.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
         if (probe.wait_for(kProbeBudget) == std::future_status::ready && probe.get()) {
             return true;
         }

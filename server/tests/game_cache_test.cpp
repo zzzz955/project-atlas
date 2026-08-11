@@ -527,8 +527,12 @@ TEST_F(GameCacheTest, TheCacheMissesUntilItIsFilledAndThenReturnsTheSameState) {
                                 kServerId, static_cast<atlas::CharacterId>(kCharacterMid))}});
     ASSERT_TRUE(ttl.ok);
     ASSERT_EQ(ttl.values.size(), std::size_t{1});
-    ATLAS_ASSERT_HAS_VALUE(ttl.values.front());
-    EXPECT_NE(*ttl.values.front(), "-1");
+    // 🔴 Bound to a named reference before the guard, not asserted on `ttl.values.front()` in
+    // place: the analysis ties an engagement fact to a storage location, and two calls of front()
+    // are two locations to it. Guarding the call expression leaves the deref still "unchecked".
+    const std::optional<std::string>& ttl_value = ttl.values.front();
+    ATLAS_ASSERT_HAS_VALUE(ttl_value);
+    EXPECT_NE(*ttl_value, "-1");
 }
 
 // ── Case 3 — 🔴 REDIS IS DOWN AND THE CHARACTER STILL LOADS ─────────────────────────────────
@@ -667,8 +671,9 @@ TEST_F(GameCacheTest, ARankingEntryIsNotWrittenWhenTheTransactionDoesNotCommit) 
     const atlas::RedisResult present = RunCommand(score);
     ASSERT_TRUE(present.ok);
     ASSERT_EQ(present.values.size(), std::size_t{1});
-    ATLAS_ASSERT_HAS_VALUE(present.values.front());
-    EXPECT_EQ(*present.values.front(), std::to_string(kExpHigh));
+    const std::optional<std::string>& score_value = present.values.front();
+    ATLAS_ASSERT_HAS_VALUE(score_value);
+    EXPECT_EQ(*score_value, std::to_string(kExpHigh));
 }
 
 // ── Case 6 — the encoding round trip, with no store involved ─────────────────────────────────

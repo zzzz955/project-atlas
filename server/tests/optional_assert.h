@@ -17,6 +17,17 @@
 // one, and `cppcoreguidelines-macro-usage.AllowedRegexp` in .clang-tidy enforces that.
 //
 // 🔴 Only usable inside a void-returning test body, because FAIL() is.
+//
+// 🔴 PASS IT A NAMED VARIABLE, NEVER A CALL EXPRESSION. The analysis attaches "this one holds a
+// value" to a storage location, and `r.values.front()` written twice is two locations to it — so
+// guarding the call and then dereferencing the call again leaves the deref unchecked. Bind first:
+//
+//     const std::optional<T>& value = r.values.front();
+//     ATLAS_ASSERT_HAS_VALUE(value);
+//     EXPECT_EQ(*value, expected);
+//
+// This cost a CI round trip (architecture-design.md §15.5i): the local sweep could not catch it,
+// because MSVC's STL never reports `operator*` for this check at all.
 #define ATLAS_ASSERT_HAS_VALUE(opt)         \
     do {                                    \
         if (!(opt).has_value()) {           \

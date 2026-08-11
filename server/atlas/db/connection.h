@@ -26,8 +26,11 @@
 // silently reinterpreting a pointer. The mechanical enforcement of the hiding is the PRIVATE link
 // to unofficial::libmariadb in CMakeLists.txt — the same shape core/log.h uses to keep spdlog out
 // of every translation unit (§11.1).
-// NOLINTNEXTLINE(readability-identifier-naming) — the tag belongs to libmariadb's C API, not to us;
-// renaming it to satisfy §3 would stop it from being a forward declaration of the driver's struct.
+// The tag belongs to libmariadb's C API, not to us; renaming it to satisfy §3 would stop it from
+// being a forward declaration of the driver's struct.
+// 🔴 The marker below covers exactly ONE following line, and a comment counts as that line, so the
+// reason sits above it and never between it and the code.
+// NOLINTNEXTLINE(readability-identifier-naming)
 struct st_mysql;
 
 namespace atlas {
