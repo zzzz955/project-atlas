@@ -14,6 +14,7 @@
 //
 // The driver's statement handle, named by its own C API struct tag for the reason connection.h
 // gives. <mysql.h> stays out of every header in this library.
+// NOLINTNEXTLINE(readability-identifier-naming) — libmariadb's tag, same reason as connection.h.
 struct st_mysql_stmt;
 
 namespace atlas {

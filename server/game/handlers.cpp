@@ -375,7 +375,7 @@ void GameServer::HandleCharacterLoad(const std::shared_ptr<atlas::Session>& sess
     // request derives its identity from the connection instead of from the packet. That is the half
     // of server authority (§8.2 layer 3) this slice can actually claim.
     atlas::Ctx ctx = MakeCtx(session, state);
-    const atlas::CharacterId character_id = static_cast<atlas::CharacterId>(requested);
+    const auto character_id = static_cast<atlas::CharacterId>(requested);
     ctx.character_id = character_id;
 
     // 🔴 The cache is asked FIRST and its answer only chooses how much work the database job does

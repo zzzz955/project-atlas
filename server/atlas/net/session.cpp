@@ -1,5 +1,6 @@
 #include "atlas/net/session.h"
 
+#include <tuple>
 #include <utility>
 
 #include "atlas/core/log.h"
@@ -53,10 +54,10 @@ void Session::Close() {
 FailureHandler Session::MakeFailureHandler() {
     // Captures a strong reference: the guard runs after the handler body has already failed, and it
     // still has to be able to shut the connection down.
-    return FailureHandler([self = shared_from_this()](std::string_view reason) {
+    return {[self = shared_from_this()](std::string_view reason) {
         // Already on the strand — `Guarded::Fail` runs inside the handler it wrapped.
         self->CloseOnStrand(reason);
-    });
+    }};
 }
 
 void Session::StartReadOnStrand() {
@@ -157,9 +158,11 @@ void Session::CloseOnStrand([[maybe_unused]] std::string_view reason) {
 
     // The error_code overloads: shutting down a socket the peer already dropped fails, and that is
     // not something the close path can or should react to.
+    // The return value carries the same failure a second time; acceptor.cpp says why it is
+    // discarded explicitly rather than dropped.
     ErrorCode ignored;
-    socket_.shutdown(Socket::shutdown_both, ignored);
-    socket_.close(ignored);
+    std::ignore = socket_.shutdown(Socket::shutdown_both, ignored);
+    std::ignore = socket_.close(ignored);
 
     // 🔴 The queue is deliberately NOT cleared here. `close()` cancels the in-flight `async_write`,
     // but cancellation is asynchronous: the buffer at the front stays registered with the OS until

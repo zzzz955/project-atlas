@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -380,9 +381,11 @@ private:
         }
         closed_ = true;
 
+        // Discarded explicitly — see atlas/net/acceptor.cpp for why the return value is not enough
+        // to leave unnamed.
         atlas::ErrorCode ignored;
-        socket_.shutdown(atlas::Socket::shutdown_both, ignored);
-        socket_.close(ignored);
+        std::ignore = socket_.shutdown(atlas::Socket::shutdown_both, ignored);
+        std::ignore = socket_.close(ignored);
         timer_.cancel();
 
         if (result_.established) {
@@ -592,7 +595,7 @@ UInt32 Percentile(const std::vector<UInt32>& sorted_samples, atlas::Float64 frac
     }
     // Nearest rank: the smallest sample at or above the requested fraction of the population. No
     // interpolation — an interpolated p99 invents a value nothing measured.
-    const atlas::Float64 count = static_cast<atlas::Float64>(sorted_samples.size());
+    const auto count = static_cast<atlas::Float64>(sorted_samples.size());
     const atlas::Float64 exact_rank = std::ceil(fraction * count);
     std::size_t rank = 1;
     if (exact_rank > 1.0) {

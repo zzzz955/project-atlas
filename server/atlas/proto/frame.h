@@ -48,7 +48,7 @@ inline constexpr std::size_t kFrameHeaderSize = 12;
 
 // architecture-design.md §9 — back-pressure, the half of the cap that belongs to a single message.
 // The other half is Session::kMaxWriteQueueBytes. 🔴 Exceeding either closes the connection.
-inline constexpr std::size_t kMaxPayload = 16 * 1024;
+inline constexpr std::size_t kMaxPayload = std::size_t{16} * 1024;
 
 // The decoded header. A plain aggregate — it is never memcpy'd on or off the wire.
 struct FrameHeader {

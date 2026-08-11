@@ -58,7 +58,7 @@ LiveMetrics::LiveMetrics() {
 }
 
 void LiveMetrics::RecordLatency(UInt32 micros) noexcept {
-    std::size_t index = static_cast<std::size_t>(micros / kBucketMicros);
+    auto index = static_cast<std::size_t>(micros / kBucketMicros);
     if (index > kRangeBuckets) {
         index = kRangeBuckets;
     }
@@ -99,7 +99,7 @@ Float64 LiveMetrics::PercentileMs(UInt64 total, Float64 fraction) const noexcept
     for (std::size_t index = 0; index < kBucketCount; ++index) {
         seen += scratch_[index];
         if (seen >= rank) {
-            const Float64 upper_us =
+            const auto upper_us =
                 static_cast<Float64>((index + 1) * static_cast<std::size_t>(kBucketMicros));
             return upper_us / 1000.0;
         }
@@ -243,7 +243,7 @@ void LiveView::Render(const LiveSample& sample) {
         std::size_t level = 0;
         if (peak > 0.0) {
             const Float64 scaled = (value / peak) * static_cast<Float64>(kSparkRamp.size() - 1);
-            level = static_cast<std::size_t>(scaled + 0.5);
+            level = static_cast<std::size_t>(std::lround(scaled));
         }
         if (level >= kSparkRamp.size()) {
             level = kSparkRamp.size() - 1;

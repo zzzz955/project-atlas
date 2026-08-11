@@ -60,7 +60,7 @@ bool EncodeFrame(std::vector<Byte>& out, UInt16 opcode, UInt32 seq, std::span<co
     }
 
     // kMaxPayload (16 KiB) is far below the UInt16 ceiling, so the narrowing cast cannot lose data.
-    const UInt16 length = static_cast<UInt16>(payload.size());
+    const auto length = static_cast<UInt16>(payload.size());
 
     out.reserve(out.size() + kFrameHeaderSize + payload.size());
     FramePutLe16(out, length);

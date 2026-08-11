@@ -1,6 +1,7 @@
 #include "atlas/net/acceptor.h"
 
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include "atlas/core/error.h"
@@ -84,9 +85,13 @@ void SessionAcceptor::CloseOnStrand() {
     }
     closed_ = true;
 
+    // 🔴 Boost's sync ops report the failure TWICE — through the out-param and through the return
+    // value — so passing `ignored` is only half of saying "dropped on purpose". The discard has to
+    // be written out, or the return copy is dropped silently and the reader cannot tell deliberate
+    // from forgotten.
     ErrorCode ignored;
-    acceptor_.cancel(ignored);
-    acceptor_.close(ignored);
+    std::ignore = acceptor_.cancel(ignored);
+    std::ignore = acceptor_.close(ignored);
     ATLAS_LOG_INFO("acceptor stopped on port {}", local_endpoint_.port());
 }
 

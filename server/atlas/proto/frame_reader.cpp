@@ -21,7 +21,7 @@ FrameError FrameReader::Feed(std::span<const Byte> bytes, std::vector<Frame>& ou
             break;  // Unreachable given the check above; kept so the contract is not assumed away.
         }
 
-        const std::size_t declared = static_cast<std::size_t>(header.length);
+        const auto declared = static_cast<std::size_t>(header.length);
 
         // 🔴 Validation order matters (cpp-style.md §4.4, the same rule pkt_codec.h follows):
         //    cap first, remaining-size second, and only then a subspan. The prefix is chosen by the

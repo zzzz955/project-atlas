@@ -38,12 +38,16 @@ RequestAdmissionResult IdempotencyStore::Begin(Ctx& ctx, Duration wait_budget) {
             fresh.expires_at = Clock::now() + entry_ttl_;
             entries_.insert_or_assign(key, std::move(fresh));
             ctx.request_state = RequestState::Received;
-            return {RequestAdmission::Started, RequestState::Received, std::string{}};
+            return {.admission = RequestAdmission::Started,
+                    .state = RequestState::Received,
+                    .result = std::string{}};
         }
 
         if (found->second.state != RequestState::Received) {
             ctx.request_state = found->second.state;
-            return {RequestAdmission::Replay, found->second.state, found->second.result};
+            return {.admission = RequestAdmission::Replay,
+                    .state = found->second.state,
+                    .result = found->second.result};
         }
 
         // Owned by someone else and still running. Re-checked once after the budget expires so a
@@ -51,7 +55,9 @@ RequestAdmissionResult IdempotencyStore::Begin(Ctx& ctx, Duration wait_budget) {
         // "in progress".
         if (waited_out) {
             ctx.request_state = RequestState::Received;
-            return {RequestAdmission::InProgress, RequestState::Received, std::string{}};
+            return {.admission = RequestAdmission::InProgress,
+                    .state = RequestState::Received,
+                    .result = std::string{}};
         }
         waited_out = finished_.wait_until(lock, wait_deadline) == std::cv_status::timeout;
     }

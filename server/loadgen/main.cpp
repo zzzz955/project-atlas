@@ -145,7 +145,7 @@ void Seed(atlas::Connection& connection, UInt16 server_id, UInt64 first_characte
 
 void Report(const atlas_loadgen::LoadOptions& options, const atlas_loadgen::LoadStats& stats) {
     std::vector<UInt32> samples = stats.latencies_us;
-    std::sort(samples.begin(), samples.end());
+    std::ranges::sort(samples);
 
     const Float64 window_seconds = static_cast<Float64>(stats.steady_window_ms) / 1000.0;
     const Float64 throughput =
@@ -190,7 +190,7 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
         atlas::LogInit(log_config);
 
         atlas_loadgen::LoadOptions options;
-        const std::size_t argument_count = static_cast<std::size_t>(argc);
+        const auto argument_count = static_cast<std::size_t>(argc);
         for (std::size_t index = 1; index < argument_count; ++index) {
             const std::string_view key(argv[index]);
             // The only option without a value, so it is taken before the pairing rule below.

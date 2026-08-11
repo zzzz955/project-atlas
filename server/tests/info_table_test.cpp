@@ -73,9 +73,8 @@ TEST(InfoTableTest, AnIdTheCsvDoesNotDeclareIsNullAndNotANeighbour) {
 // nullptr for rows that are right there.
 TEST(InfoTableTest, RowsAreEmittedInAscendingKeyOrder) {
     const std::span<const ItemInfoRow> rows = ItemInfoRows();
-    EXPECT_TRUE(
-        std::is_sorted(rows.begin(), rows.end(),
-                       [](const ItemInfoRow& a, const ItemInfoRow& b) { return a.id_ < b.id_; }));
+    EXPECT_TRUE(std::ranges::is_sorted(
+        rows, [](const ItemInfoRow& a, const ItemInfoRow& b) { return a.id_ < b.id_; }));
 }
 
 // 🔴 THE SEAM, ASSERTED. item.csv has three columns and the server keeps two: `name` is marked `C`

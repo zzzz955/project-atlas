@@ -53,9 +53,8 @@ std::string_view DescribeSlot(EquipSlot slot) noexcept {
 void Inventory::Add(const Item& item) { items_.push_back(item); }
 
 const Item* Inventory::Find(atlas::UInt64 item_uid) const noexcept {
-    const auto found = std::find_if(items_.begin(), items_.end(), [item_uid](const Item& held) {
-        return held.item_uid == item_uid;
-    });
+    const auto found = std::ranges::find_if(
+        items_, [item_uid](const Item& held) { return held.item_uid == item_uid; });
     return found == items_.end() ? nullptr : &*found;
 }
 
@@ -63,8 +62,8 @@ const Item* Inventory::EquippedAt(EquipSlot slot) const noexcept {
     if (slot == EquipSlot::None) {
         return nullptr;
     }
-    const auto found = std::find_if(items_.begin(), items_.end(),
-                                    [slot](const Item& held) { return held.slot == slot; });
+    const auto found =
+        std::ranges::find_if(items_, [slot](const Item& held) { return held.slot == slot; });
     return found == items_.end() ? nullptr : &*found;
 }
 
@@ -72,9 +71,8 @@ bool Inventory::Equip(atlas::UInt64 item_uid, EquipSlot slot) noexcept {
     if (!IsEquippableSlot(slot)) {
         return false;
     }
-    const auto target = std::find_if(items_.begin(), items_.end(), [item_uid](const Item& held) {
-        return held.item_uid == item_uid;
-    });
+    const auto target = std::ranges::find_if(
+        items_, [item_uid](const Item& held) { return held.item_uid == item_uid; });
     if (target == items_.end()) {
         return false;
     }

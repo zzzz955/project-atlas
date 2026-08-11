@@ -75,8 +75,8 @@ Character::Character(atlas::UInt16 server_id, atlas::CharacterId character_id,
       exp_(exp) {}
 
 Character CharacterFromRow(const atlas::generated::CharactersRow& row) {
-    return Character(row.server_id_, row.character_id_, row.account_uid_, row.name_, row.pos_x_,
-                     row.pos_y_, row.level_, row.exp_);
+    return {row.server_id_, row.character_id_, row.account_uid_, row.name_,
+            row.pos_x_,     row.pos_y_,        row.level_,       row.exp_};
 }
 
 atlas::generated::CharactersRow CharactersRowFromDb(const atlas::DbRow& row) {

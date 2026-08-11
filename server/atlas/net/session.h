@@ -44,7 +44,7 @@ public:
     // 🔴 Exceeding it CLOSES the connection. It does not drop the payload. A drop breaks the
     // protocol silently and the symptom turns up days later in an unrelated place; a close is loud,
     // immediate, and leaves the peer with a fact it can act on.
-    static constexpr std::size_t kMaxWriteQueueBytes = 1024 * 1024;
+    static constexpr std::size_t kMaxWriteQueueBytes = std::size_t{1024} * 1024;
 
     // 🔴 cpp-style.md §4.4 — a session MUST be owned by a shared_ptr, because `shared_from_this()`
     // inside every handler is what keeps it alive while an operation is in flight. The constructor

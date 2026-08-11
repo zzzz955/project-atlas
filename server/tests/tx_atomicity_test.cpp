@@ -28,6 +28,7 @@
 #include "atlas/db/transaction.h"
 #include "generated/db/character_items_row.h"
 #include "generated/db/characters_row.h"
+#include "tests/optional_assert.h"
 
 // Fault-injection suite for atomicity across a server boundary (architecture-design.md §10.4).
 //
@@ -204,14 +205,14 @@ public:
         const RequestAdmissionResult admitted = store_.Begin(ctx, kWaitBudget);
         if (admitted.admission != RequestAdmission::Started) {
             // 🔴 The recorded result, byte for byte. No second execution, no second commit.
-            return {admitted.admission, admitted.result};
+            return {.admission = admitted.admission, .response = admitted.result};
         }
 
         UInt64 exp_after = 0;
         {
-            std::optional<atlas::PooledConnection> lease = Lease();
+            atlas::PooledConnection lease = Lease();
             try {
-                Transact(ctx, **lease, exp_delta, hooks, exp_after);
+                Transact(ctx, *lease, exp_delta, hooks, exp_after);
             } catch (...) {
                 // The transaction rolled back, so the request did not happen and the key must be
                 // free again — otherwise a retransmit would be replayed a result nobody produced.
@@ -237,33 +238,37 @@ public:
         }
 
         if (hooks.stop_before_response) {
-            return {RequestAdmission::Started, std::move(response)};
+            return {.admission = RequestAdmission::Started, .response = std::move(response)};
         }
         store_.MarkResponded(ctx);
-        return {RequestAdmission::Started, std::move(response)};
+        return {.admission = RequestAdmission::Started, .response = std::move(response)};
     }
 
     // Rebuilds the record from DURABLE state after a restart. Returns false when nothing was
     // committed for this key, in which case a retransmit legitimately executes from scratch.
     bool RecoverFromDurableState(Ctx& ctx) {
-        std::optional<atlas::PooledConnection> lease = Lease();
-        if (!RequestRowExists(**lease, ctx.request_key)) {
+        atlas::PooledConnection lease = Lease();
+        if (!RequestRowExists(*lease, ctx.request_key)) {
             return false;
         }
         // 🔴 Reconstructed, not replayed: the response bytes died with the process. This is
         // faithful only because the durable state still determines the answer — a result that
         // depended on anything else about that process would not come back.
-        store_.Seed(ctx, BuildResponse(ReadExp(**lease)));
+        store_.Seed(ctx, BuildResponse(ReadExp(*lease)));
         return true;
     }
 
 private:
-    std::optional<atlas::PooledConnection> Lease() {
+    // 🔴 Returns the connection itself, not an optional of one: an exhausted pool throws right
+    // here, so every caller past this point holds a lease that exists. Handing back an optional
+    // made each call site deref something already known to be engaged — `**lease` — which reads as
+    // if emptiness were still possible and cost a clang-tidy report at each one.
+    atlas::PooledConnection Lease() {
         std::optional<atlas::PooledConnection> lease = pool_.Acquire(atlas::Seconds{5});
         if (!lease.has_value()) {
             throw std::runtime_error("the connection pool was exhausted");
         }
-        return lease;
+        return std::move(*lease);
     }
 
     void Transact(Ctx& ctx, atlas::Connection& connection, UInt64 exp_delta, const Hooks& hooks,
@@ -281,16 +286,16 @@ private:
     }
 
     void Compensate(const Ctx& ctx, UInt64 exp_delta) {
-        std::optional<atlas::PooledConnection> lease = Lease();
+        atlas::PooledConnection lease = Lease();
         // Its own ledger: the original ctx correctly says Committed, and overwriting that with the
         // compensation's own transaction state would erase the fact being compensated for.
         Ctx compensation_ctx;
         compensation_ctx.trace_id = ctx.trace_id;
         compensation_ctx.request_key = ctx.request_key;
 
-        atlas::Transaction transaction(**lease, compensation_ctx);
-        WriteExp(**lease, ReadExp(**lease) - exp_delta);
-        DeleteRequestRow(**lease, ctx.request_key);
+        atlas::Transaction transaction(*lease, compensation_ctx);
+        WriteExp(*lease, ReadExp(*lease) - exp_delta);
+        DeleteRequestRow(*lease, ctx.request_key);
         transaction.Commit();
     }
 
@@ -542,7 +547,7 @@ TEST_F(TxAtomicityTest, CrashAfterCommitResumesFromDurableStateAndLosesTheInMemo
         EXPECT_EQ(ctx.request_state, RequestState::Persisted);
 
         const std::optional<RequestState> recorded = dying.Store().Find(key);
-        ASSERT_TRUE(recorded.has_value());
+        ATLAS_ASSERT_HAS_VALUE(recorded);
         EXPECT_EQ(*recorded, RequestState::Persisted);
     }  // ← the process dies here
 

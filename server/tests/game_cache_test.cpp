@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -34,6 +35,7 @@
 #include "game/ranking.h"
 #include "generated/db/characters_row.h"
 #include "generated/pkt/pkt_codec.h"
+#include "tests/optional_assert.h"
 
 // The cache axis (architecture-design.md §10.2): the exp ranking, the character read cache, and the
 // one property that decides whether either of them is allowed to exist.
@@ -201,8 +203,8 @@ public:
 
     ~TestClient() {
         atlas::ErrorCode ignored;
-        socket_.shutdown(atlas::Socket::shutdown_both, ignored);
-        socket_.close(ignored);
+        std::ignore = socket_.shutdown(atlas::Socket::shutdown_both, ignored);
+        std::ignore = socket_.close(ignored);
     }
 
     void Send(UInt16 opcode, const std::vector<Byte>& payload) {
@@ -475,7 +477,7 @@ TEST_F(GameCacheTest, TheRankingReturnsTheTopCharactersInDescendingExp) {
     ASSERT_EQ(ColdLoad(kCharacterMid).result, atlas_demo::LoadResult::Ok);
 
     const std::optional<std::vector<RankEntry>> top = TopRanked(10);
-    ASSERT_TRUE(top.has_value());
+    ATLAS_ASSERT_HAS_VALUE(top);
     ASSERT_EQ(top->size(), std::size_t{3});
 
     // 🔴 Descending, and the insertion order above was low, HIGH, mid — so a store that simply
@@ -489,7 +491,7 @@ TEST_F(GameCacheTest, TheRankingReturnsTheTopCharactersInDescendingExp) {
 
     // The count is honoured, so a client cannot make the server produce an arbitrary response.
     const std::optional<std::vector<RankEntry>> two = TopRanked(2);
-    ASSERT_TRUE(two.has_value());
+    ATLAS_ASSERT_HAS_VALUE(two);
     EXPECT_EQ(two->size(), std::size_t{2});
 }
 
@@ -504,7 +506,7 @@ TEST_F(GameCacheTest, TheCacheMissesUntilItIsFilledAndThenReturnsTheSameState) {
                 CachedCharacter{.character = loaded.character, .items = loaded.items});
 
     const std::optional<CachedCharacter> hit = GetCached(kCharacterMid);
-    ASSERT_TRUE(hit.has_value());
+    ATLAS_ASSERT_HAS_VALUE(hit);
     EXPECT_EQ(hit->character.character_id_, loaded.character.character_id_);
     EXPECT_EQ(hit->character.account_uid_, loaded.character.account_uid_);
     EXPECT_EQ(hit->character.name_, "atlas-mid");
@@ -525,7 +527,7 @@ TEST_F(GameCacheTest, TheCacheMissesUntilItIsFilledAndThenReturnsTheSameState) {
                                 kServerId, static_cast<atlas::CharacterId>(kCharacterMid))}});
     ASSERT_TRUE(ttl.ok);
     ASSERT_EQ(ttl.values.size(), std::size_t{1});
-    ASSERT_TRUE(ttl.values.front().has_value());
+    ATLAS_ASSERT_HAS_VALUE(ttl.values.front());
     EXPECT_NE(*ttl.values.front(), "-1");
 }
 
@@ -665,7 +667,7 @@ TEST_F(GameCacheTest, ARankingEntryIsNotWrittenWhenTheTransactionDoesNotCommit) 
     const atlas::RedisResult present = RunCommand(score);
     ASSERT_TRUE(present.ok);
     ASSERT_EQ(present.values.size(), std::size_t{1});
-    ASSERT_TRUE(present.values.front().has_value());
+    ATLAS_ASSERT_HAS_VALUE(present.values.front());
     EXPECT_EQ(*present.values.front(), std::to_string(kExpHigh));
 }
 
@@ -688,7 +690,7 @@ TEST(CharacterCacheCodec, EveryFieldSurvivesTheRoundTripAndGarbageDecodesAsAMiss
 
     const std::optional<CachedCharacter> decoded =
         atlas_demo::DecodeCachedCharacter(atlas_demo::EncodeCachedCharacter(value));
-    ASSERT_TRUE(decoded.has_value());
+    ATLAS_ASSERT_HAS_VALUE(decoded);
     EXPECT_EQ(decoded->character, value.character);
     EXPECT_EQ(decoded->items, value.items);
 

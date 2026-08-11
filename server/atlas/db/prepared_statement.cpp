@@ -283,7 +283,7 @@ std::vector<DbRow> PreparedStatement::Query(std::span<const DbValue> parameters)
 
     std::vector<DbRow> rows;
     while (true) {
-        const Int32 status = static_cast<Int32>(mysql_stmt_fetch(stmt_));
+        const auto status = static_cast<Int32>(mysql_stmt_fetch(stmt_));
         if (status == MYSQL_NO_DATA) {
             break;
         }

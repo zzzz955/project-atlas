@@ -62,7 +62,9 @@ bool DbRunner::Submit(Ctx ctx, Work work, Completion completion, CompletionPoste
         }
         // 🔴 The ctx is copied into the job here, at the boundary. Everything past this line runs
         // on another thread and must not reach back into the caller's frame (§9.2).
-        Job job{.ctx = std::move(ctx),
+        // 🔴 Ctx is trivially copyable, so it is copied — not moved. A std::move() here would be
+        // dead syntax that reads as a transfer of ownership the type does not have.
+        Job job{.ctx = ctx,
                 .work = std::move(work),
                 .completion = std::move(completion),
                 .poster = std::move(poster)};

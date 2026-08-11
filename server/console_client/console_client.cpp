@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <span>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "atlas/core/ctx.h"
@@ -436,9 +437,11 @@ void ConsoleClient::Close() {
     }
     closed_.store(true);
 
+    // Discarded explicitly for the reason atlas/net/acceptor.cpp gives: Boost reports through both
+    // the out-param and the return value.
     atlas::ErrorCode ignored;
-    socket_.shutdown(atlas::Socket::shutdown_both, ignored);
-    socket_.close(ignored);
+    std::ignore = socket_.shutdown(atlas::Socket::shutdown_both, ignored);
+    std::ignore = socket_.close(ignored);
 
     // 🔴 Last, and unconditional: the REPL thread is blocked on this completion, so a Close() that
     // did not fire it would hang the terminal instead of ending the session.

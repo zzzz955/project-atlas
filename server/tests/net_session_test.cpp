@@ -8,6 +8,7 @@
 #include <span>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "atlas/core/error.h"
@@ -72,8 +73,8 @@ public:
 
     void Disconnect() {
         atlas::ErrorCode ignored;
-        socket_.shutdown(atlas::Socket::shutdown_both, ignored);
-        socket_.close(ignored);
+        std::ignore = socket_.shutdown(atlas::Socket::shutdown_both, ignored);
+        std::ignore = socket_.close(ignored);
     }
 
 private:

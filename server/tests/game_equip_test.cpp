@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -529,8 +530,8 @@ public:
 
     ~TestClient() {
         atlas::ErrorCode ignored;
-        socket_.shutdown(atlas::Socket::shutdown_both, ignored);
-        socket_.close(ignored);
+        std::ignore = socket_.shutdown(atlas::Socket::shutdown_both, ignored);
+        std::ignore = socket_.close(ignored);
     }
 
     // §8.3 — the client keeps its own send counter, exactly as the server keeps one for its
