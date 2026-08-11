@@ -172,15 +172,15 @@ dumping and skimming.
 | `.claude/hooks/bulk-output-guard/` | `PreToolUse(Bash\|PowerShell)` — denies unbounded recursive listings, whole-file `cat`, shell content search, and unbounded `git log`; points at the bounded tool. Enforces "Context budget" above. `git diff` exempt. Disable: `ATLAS_BULK_OUTPUT_GUARD_DISABLE=1` |
 | `.claude/settings.json` | hook registration. `settings.local.json` is gitignored |
 | `.agents/skills/*/` | Codex bridge stubs — 5-line pointers at the `.claude/skills/*` originals + `agents/openai.yaml` display metadata. **Never fork the workflow here**; edit the `.claude` file |
-| `tools/` | **Node data-pipeline = the templatization seam** (`AD §14`). `config-loader.js` + `types.json` (normalized-type SoT, `cpp` column = the C++ seam) + `all_generator.bat`, and the generators `{pkt,db}_generator/` (`info_generator` lands with the demo-game CSVs in a later slice). Driven from the repo root by `npm run gen:*`. See `tools/AGENTS.md` |
-| `template.ini` · `package.json` | generator paths / targets / namespaces (🔴 never secrets), and the `gen:all` · `gen:check` script contract. 🔴 Only wire a `gen:*` script for a generator this repo **actually ships or has planned work to create** — a script pointing at one nobody will write pins `gen:check` at exit 1 forever and kills the drift gate |
+| `tools/` | **Node data-pipeline = the templatization seam** (`AD §14`). `config-loader.js` + `types.json` (normalized-type SoT, `cpp` column = the C++ seam) + `all_generator.bat`, and **all three** generators `{info,pkt,db}_generator/`. Driven from the repo root by `npm run gen:*`. See `tools/AGENTS.md`.<br>`tools/loadreport/` is **not** a generator — it renders a load run's JSONL into a self-contained HTML (`npm run loadreport`, `AD §16.1a`). 🔴 It is deliberately outside `gen:all`/`gen:check`: its input is a measurement, not a source, so drift against it is meaningless |
+| `template.ini` · `package.json` | generator paths / targets / namespaces (🔴 never secrets), and the `gen:all` · `gen:check` · `gen:db:apply` script contract — **`info → db → pkt`**, input data before schema before packets (`AD §14`). 🔴 `gen:db:apply` is **dev-only**: it exits 1 before opening a socket unless `ATLAS_ENV=dev`, because prod migrations are applied by a human from `server/db/migrations/` (`AD §10.7`). Its live-DB path lazily `require`s `mysql2`, which is a declared `devDependency` — never leave it undeclared, or a fresh clone emits no migration and still exits 0. 🔴 Only wire a `gen:*` script for a generator this repo **actually ships or has planned work to create** — a script pointing at one nobody will write pins `gen:check` at exit 1 forever and kills the drift gate. With the third generator landed, what this rule now guards against is pre-wiring a **fourth** |
 
 **Repo layout**
 ```
 server/    C++ framework + CMake root + setup.bat + server.ini + .env.example
-           + db/schema.json + generated/{pkt,db}
+           + db/schema.json + generated/{info,pkt,db}
 shared/    contracts/ (*.cs → pkt input) · datas/ (*.csv → info input)
-tools/     2 generators (Node: pkt, db) + config-loader.js + types.json
+tools/     3 generators (Node: info, pkt, db) + config-loader.js + types.json
 docs/  template.ini  package.json  compose.yaml     (client/ is a later slice)
 ```
 

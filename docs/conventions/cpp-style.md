@@ -232,7 +232,9 @@ ATLAS_LOG_DEBUG("actor={} dump={}", id, ExpensiveDump(a));
 Checks: >
   readability-identifier-naming,
   cppcoreguidelines-macro-usage,
-  bugprone-*, performance-*, modernize-*
+  bugprone-*, performance-*, modernize-*,
+  -modernize-use-trailing-return-type,
+  -bugprone-easily-swappable-parameters
 
 HeaderFilterRegex: '[/\\]atlas[/\\]'
 ExcludeHeaderFilterRegex: '[/\\]generated[/\\]'
@@ -247,7 +249,13 @@ CheckOptions:
   - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
   - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
   - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }
+  - { key: cppcoreguidelines-macro-usage.AllowedRegexp,         value: '^ATLAS_' }
 ```
+🔴 **제외 2건은 결정이지 완화가 아니다** (2026-08-11, clang-tidy 19가 처음 실제로 채점한 런.
+`architecture-design.md §15.5h`):
+- `modernize-use-trailing-return-type` — 이 프로젝트는 **선행 반환형**을 쓴다(스타일 기반 Google). 이 체크는 의도적으로 고른 컨벤션을 209곳 뒤집으라고 요구하며, `modernize-*` 와일드카드에 딸려 들어왔을 뿐이다
+- `bugprone-easily-swappable-parameters` — 인자 뒤바뀜이 실제로 위험한 표면(프로토콜·영속·ID)은 **§4.3 강타입 ID**가 이미 막는다
+- 🔴 `cppcoreguidelines-macro-usage` 는 **끄지 않았다.** `AllowedRegexp: '^ATLAS_'` 로 **§5 매크로 정책을 설정에 인코딩**했다 — 승인되지 않은 매크로는 계속 잡힌다. **끄는 것과 정책을 표현하는 것은 다르다. 가능하면 후자를 택한다**
 🔴 **생성 코드는 반드시 제외한다** — `HeaderFilterRegex`로 `atlas/`만 포함하고, `ExcludeHeaderFilterRegex`로 `generated/`를 배제한다. 🔴 배제를 `HeaderFilterRegex` 하나로 처리할 수 없다 — clang-tidy가 쓰는 `llvm::Regex`는 negative lookahead를 지원하지 않는다.
 
 🔴 **`ExcludeHeaderFilterRegex`는 clang-tidy ≥ 19를 요구한다.** 그 미만에서 벌어지는 일은 "키가 조용히 무시된다"가 **아니다** — 실측(2026-08-11, CI run 31417777347)에서 18.1.3은 `unknown key` **에러를 내고 `.clang-tidy` 전체 파싱을 포기했다**. 즉 생성 코드만 새는 것이 아니라 **네이밍·`bugprone-*`·`performance-*`·`modernize-*` 검사 집합 전체가 적용되지 않는다.** 게이트는 그래도 초록으로 보인다(그 커밋에 다른 경고가 없는 한).

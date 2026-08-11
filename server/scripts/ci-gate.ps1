@@ -151,7 +151,7 @@ if (-not $WhatIfPreference) {
 # 🔴 `game` belongs here too. It was missing when server/game/ landed, so an entire new source tree
 # was outside format-check while the gate still said PASS - the same shape of hole as a Skipped test
 # counted as a pass. Every new top-level source tree must be added here in the change that creates it.
-$sourceGlobs = @((Join-Path $ServerDir 'atlas'), (Join-Path $ServerDir 'game'), (Join-Path $ServerDir 'loadgen'), (Join-Path $ServerDir 'tests'))
+$sourceGlobs = @((Join-Path $ServerDir 'atlas'), (Join-Path $ServerDir 'game'), (Join-Path $ServerDir 'loadgen'), (Join-Path $ServerDir 'console_client'), (Join-Path $ServerDir 'tests'))
 $buildDirUnityOff = Join-Path $ServerDir "build/$UnityOffPreset"
 
 # 🔴 generated/ is deliberately absent from $sourceGlobs: generated output is never formatted or

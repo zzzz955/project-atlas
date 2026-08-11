@@ -239,7 +239,7 @@ jobs:
 
       - name: format-check
         if: steps.scope.outputs.cpp == 'true'
-        run: clang-format-19 --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/tests -name '*.h' -o -name '*.cpp')
+        run: clang-format-19 --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/console_client server/tests -name '*.h' -o -name '*.cpp')
 
       # 🔴 This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
       # clang-tidy cannot read the MSVC /Yc precompiled header that the local Ninja/cl tree emits.
@@ -260,7 +260,7 @@ jobs:
       - name: clang-tidy
         if: steps.scope.outputs.cpp == 'true'
         run: |
-          find server/atlas server/game server/loadgen server/tests -name '*.cpp' -print0 \
+          find server/atlas server/game server/loadgen server/console_client server/tests -name '*.cpp' -print0 \
             | xargs -0 -P "$(nproc)" -n 1 \
                 clang-tidy-19 -p server/build/linux-ci --warnings-as-errors='*' --quiet
 

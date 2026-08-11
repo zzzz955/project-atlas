@@ -3,7 +3,20 @@
 Checks: >
   readability-identifier-naming,
   cppcoreguidelines-macro-usage,
-  bugprone-*, performance-*, modernize-*
+  bugprone-*, performance-*, modernize-*,
+  -modernize-use-trailing-return-type,
+  -bugprone-easily-swappable-parameters
+
+# 🔴 The two exclusions above are decisions, not concessions (architecture-design.md §15.5h).
+# They landed on 2026-08-11, the first run where clang-tidy 19 actually graded this repo.
+#
+# -modernize-use-trailing-return-type: this project writes LEADING return types. The style base is
+#   Google (.clang-format) and every declaration in the tree follows it, so the check demanded 209
+#   rewrites of a convention the project chose on purpose. It only ever appeared here via the
+#   `modernize-*` wildcard.
+# -bugprone-easily-swappable-parameters: the surface where an argument swap is actually dangerous -
+#   protocol, persistence, IDs - is already covered by the strong-typed IDs of cpp-style.md §4.3.
+#   What is left is internal constructors, and wrapping those in structs is a redesign, not a fix.
 
 # Diagnose headers under atlas/ ...
 HeaderFilterRegex: '[/\\]atlas[/\\]'
@@ -20,3 +33,6 @@ CheckOptions:
   - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
   - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
   - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }
+  # 🔴 Encodes cpp-style.md §5 instead of switching the check off: the ATLAS_ family (log · throw ·
+  # check) is the sanctioned macro set, and everything outside it stays a violation.
+  - { key: cppcoreguidelines-macro-usage.AllowedRegexp,         value: '^ATLAS_' }
