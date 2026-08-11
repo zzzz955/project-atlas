@@ -41,6 +41,10 @@ COPY game ./game
 # add_subdirectory(loadgen) 으로 잡으므로 여기서 빠지면 configure 가 실패한다. 아래 runtime
 # 스테이지는 이 바이너리를 복사하지 않는다 — 서버 이미지 안의 부하 생성기는 공격자의 도구다.
 COPY loadgen ./loadgen
+# 🔴 데모용 콘솔 클라이언트. loadgen 과 같은 이유로 여기 있다 — 루트 CMakeLists 가
+# add_subdirectory(console_client) 로 잡으므로 빠지면 configure 가 실패한다. runtime 스테이지는
+# 이것도 복사하지 않는다: 서버 이미지에 클라이언트를 넣을 이유가 없다.
+COPY console_client ./console_client
 COPY tests ./tests
 
 # 🔴 §15.2: a container has a fresh filesystem every time, so vcpkg's default local binary cache

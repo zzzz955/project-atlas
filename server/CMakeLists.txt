@@ -25,6 +25,10 @@ add_subdirectory(atlas/proto)
 # deliberately not an io_context worker pool (§9), and the completion executor reaches it
 # type-erased, so this layer links no asio.
 add_subdirectory(atlas/db)
+# architecture-design.md §10.2 — the cache client. Added after atlas/net because it links it for the
+# asio aliases (net_types.h); 🔴 unlike atlas/db it has no thread pool, because boost-redis is
+# asio-native and never blocks the thread it runs on. That asymmetry is the point of §10.2.
+add_subdirectory(atlas/redis)
 add_subdirectory(generated)
 # architecture-design.md §14 — the game layer, and §15.4 is why it is not a subdirectory of atlas/:
 # the core-purity gate fails the build if `item` / `inventory` / `equip` appear under server/atlas/**.
@@ -33,4 +37,9 @@ add_subdirectory(game)
 # architecture-design.md §16.1 — the load harness. A client of the game above, so it is added after
 # it; nothing links back to it.
 add_subdirectory(loadgen)
+# architecture-design.md §15.3 — the interactive console client. Same shape as the harness above: a
+# client of the game, added after it, and nothing links back to it. 🔴 server/Dockerfile must COPY
+# this directory for the same reason it copies loadgen — the builder configures this CMakeLists and
+# a missing subdirectory fails at configure time, not at build time.
+add_subdirectory(console_client)
 add_subdirectory(tests)
