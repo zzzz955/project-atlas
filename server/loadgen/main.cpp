@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <exception>
+#include <future>
+#include <memory>
 #include <numeric>
 #include <string>
 #include <string_view>
@@ -13,13 +15,19 @@
 #include <vector>
 
 #include "atlas/config/secret_config.h"
+#include "atlas/core/ctx.h"
 #include "atlas/core/error.h"
+#include "atlas/core/ids.h"
 #include "atlas/core/log.h"
 #include "atlas/core/time.h"
 #include "atlas/core/types.h"
 #include "atlas/db/connection.h"
 #include "atlas/db/prepared_statement.h"
+#include "atlas/net/io_runner.h"
+#include "atlas/redis/connection.h"
+#include "game/character_cache.h"
 #include "game/inventory.h"
+#include "game/ranking.h"
 #include "generated/db/character_items_row.h"
 #include "generated/db/characters_row.h"
 #include "loadgen/load_client.h"
@@ -44,6 +52,12 @@
 // character ids (one per connection) is what keeps the per-character lock of §10.5 out of the
 // measurement: with every connection on its own character, what serialises is the server's DB
 // thread pool rather than one row's mutex.
+//
+// 🔴 "ITS OWN DATA" INCLUDES THE CACHE COPIES AND THE RANKING ENTRIES, not only the rows. Deleting
+// the rows alone leaves a character:{server}:{id} copy that the next run can read for up to the
+// TTL, and a ranking:{server}:exp member for a character that no longer exists — the ranking one is
+// unbounded, it accumulates one entry per seeded id per run. This scenario happened to hide the
+// first (every equip issues its own DEL) and never hid the second (§16.1h).
 //
 // 🔴 The numbers this prints are only meaningful next to the conditions they were taken under —
 // hardware, build configuration, whether the client shares a CPU with the server, worker counts and
@@ -98,6 +112,74 @@ void DeleteRange(atlas::Connection& connection, UInt16 server_id, UInt64 first_c
                                        DbValue{first_character + static_cast<UInt64>(count)}};
     connection.Prepare(kDeleteItemsSql).Execute(range);
     connection.Prepare(kDeleteCharactersSql).Execute(range);
+}
+
+// How long the connect loop is given before the purge is attempted anyway, and how long one purge
+// command may take. The second is above the 500 ms per-command deadline atlas/redis applies, so a
+// timeout here means the answer never came rather than that the deadline was tight.
+constexpr atlas::Seconds kRedisReadyBudget{2};
+constexpr atlas::Seconds kRedisCommandBudget{2};
+
+// One command, run from the process lifetime thread. 🔴 Never from an I/O thread: the reply lands
+// on the connection's strand and this blocks until it does.
+bool ExecuteBlocking(atlas::RedisConnection& redis, const atlas::RedisCommand& command) {
+    auto answered = std::make_shared<std::promise<bool>>();
+    std::future<bool> settled = answered->get_future();
+    redis.Execute(atlas::Ctx{}, command,
+                  [answered](const atlas::RedisResult& result) { answered->set_value(result.ok); });
+
+    // shared_ptr, not a promise on this frame: the wait below is
+    // bounded, so this can return while the handler is still
+    // outstanding, and a frame-local promise would then be a
+    // dangling write. The analyzer stops following the handler's
+    // reference where it is posted onto the strand and reads the
+    // control block as leaked. Same shape, and same marker, as
+    // RedisConnection::WaitUntilReady.
+    // The marker below is the last line before the code: it covers
+    // one line only, and a comment would consume it.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+    return settled.wait_for(kRedisCommandBudget) == std::future_status::ready && settled.get();
+}
+
+// The Redis half of DeleteRange: the cache copies and the ranking members of the seeded block.
+//
+// 🔴 SCOPED TO THE SEEDED ID RANGE, exactly like the SQL above and for the same reason — the
+// harness runs against the same server_id the deployed GAME uses, so anything scoped to the server
+// takes what this run did not create. There is no key-pattern scan here and there is no FLUSHDB.
+//
+// 🔴 Two commands, not 2N: DEL and ZREM both take the whole list.
+void PurgeRedisRange(atlas::RedisConnection& redis, UInt16 server_id, UInt64 first_character,
+                     std::size_t count) {
+    // 🔴 The cache is OPTIONAL (§10.2). A run without one has no residue to clean and must not be
+    // failed, or degraded on purpose, for the absence.
+    if (!redis.IsConfigured()) {
+        return;
+    }
+
+    std::vector<std::string> cache_keys;
+    cache_keys.reserve(count);
+    std::vector<std::string> ranking_args;
+    ranking_args.reserve(count + 1U);
+    ranking_args.push_back(atlas_demo::ExpRankingKey(server_id));
+    for (std::size_t index = 0; index < count; ++index) {
+        const UInt64 character_id = first_character + static_cast<UInt64>(index);
+        cache_keys.push_back(atlas_demo::CharacterCacheKey(
+            server_id, static_cast<atlas::CharacterId>(character_id)));
+        ranking_args.push_back(std::to_string(character_id));
+    }
+
+    const bool cache_ok =
+        ExecuteBlocking(redis, atlas::RedisCommand{.verb = "DEL", .args = std::move(cache_keys)});
+    const bool ranking_ok = ExecuteBlocking(
+        redis, atlas::RedisCommand{.verb = "ZREM", .args = std::move(ranking_args)});
+    if (!cache_ok || !ranking_ok) {
+        // Printed rather than logged: this is the harness talking to its operator, and the run's
+        // figures are unaffected either way. Loud because the leftovers outlive the process.
+        std::printf(
+            "WARNING - redis cleanup incomplete (cache=%s ranking=%s). Seeded cache keys "
+            "or ranking entries may survive this run.\n",
+            cache_ok ? "ok" : "FAILED", ranking_ok ? "ok" : "FAILED");
+    }
 }
 
 void Seed(atlas::Connection& connection, UInt16 server_id, UInt64 first_character,
@@ -247,10 +329,41 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
         db_config.plugin_directory = ATLAS_MARIADB_PLUGIN_DIR;
 #endif
 
+        atlas::RedisConnectionConfig redis_config;
+        redis_config.host = secrets.redis_host;
+        redis_config.port = secrets.redis_port == 0 ? UInt16{6379} : secrets.redis_port;
+        redis_config.password = secrets.redis_password;
+        // 🔴 The same rewrite server/tests/game_cache_test.cpp does, for the same reason: .env
+        // carries the compose SERVICE name and this harness is a client that always runs on the
+        // host, where that name is nothing. Unlike ATLAS_DB_HOST nothing outside does it for Redis.
+        // An unset host is left alone — that is the cache being off (§10.2), not a name to fix.
+        if (redis_config.host == "redis") {
+            redis_config.host = "127.0.0.1";
+        }
+
+        // 🔴 Stopped before the io runner, never after (§9): the run loop is an outstanding
+        // operation, and a context whose work guard is released while it is still pending never
+        // drains. Declaration order gives that for free — redis is destroyed first.
+        atlas::IoRunner redis_io(std::size_t{1});
+        atlas::RedisConnection redis(redis_io.Context(), redis_config);
+        if (redis.IsConfigured()) {
+            redis_io.Start();
+            redis.Start();
+            if (!redis.WaitUntilReady(kRedisReadyBudget)) {
+                std::printf(
+                    "WARNING - redis is configured at %s but did not answer; this run's "
+                    "cache and ranking cleanup will not happen.\n",
+                    redis_config.host.c_str());
+            }
+        }
+
         atlas::Connection seeder(db_config);
         // Delete first: a previous run that was killed leaves its block behind, and INSERT would
-        // then fail on the primary key rather than the harness starting clean.
+        // then fail on the primary key rather than the harness starting clean. 🔴 The cache and the
+        // ranking need the same treatment for a stronger reason: the ids are reused, so a copy left
+        // by the previous run describes THIS run's character with the previous run's contents.
         DeleteRange(seeder, options.server_id, options.first_character_id, options.connections);
+        PurgeRedisRange(redis, options.server_id, options.first_character_id, options.connections);
         Seed(seeder, options.server_id, options.first_character_id, options.connections);
         std::printf(
             "seeded %zu characters (server_id=%u, character_id %llu..%llu)\n", options.connections,
@@ -261,8 +374,11 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
         Report(options, stats);
 
         DeleteRange(seeder, options.server_id, options.first_character_id, options.connections);
+        PurgeRedisRange(redis, options.server_id, options.first_character_id, options.connections);
         std::printf("seeded rows removed\n");
 
+        redis.Stop();
+        redis_io.Stop();
         atlas::LogShutdown();
         return 0;
     } catch (const std::exception& failure) {

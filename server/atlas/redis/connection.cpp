@@ -176,6 +176,8 @@ bool RedisConnection::WaitUntilReady(Duration timeout) {
     }
 }
 
+bool RedisConnection::IsConfigured() const noexcept { return !impl_->run_config.addr.host.empty(); }
+
 void RedisConnection::Execute(Ctx ctx, const RedisCommand& command, Handler handler) {
     if (!impl_->running.load()) {
         // Refused inline rather than queued. 🔴 The caller gets exactly one outcome either way;

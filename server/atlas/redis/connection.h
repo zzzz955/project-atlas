@@ -109,6 +109,15 @@ public:
     // (start-up) and for tests - 🔴 never call it from an I/O thread, it would wait on itself.
     [[nodiscard]] bool WaitUntilReady(Duration timeout);
 
+    // Whether a host was supplied at construction. 🔴 THIS IS NOT "IS THE SERVER REACHABLE": a
+    // configured server that is currently down still answers true, and that is the whole point of
+    // the question. `RedisResult::ok == false` cannot carry the difference - it says the command
+    // did not complete, not whether there was ever a cache for it to complete against - so a
+    // caller that wants to report a failed command has to ask this first. 10.2 makes the cache
+    // optional and its absence a warning rather than a failure; without this the two collapse and
+    // "the deployment turned the cache off" gets logged as "the cache is broken", once per request.
+    [[nodiscard]] bool IsConfigured() const noexcept;
+
     // Queues one command. `handler` always runs exactly once, so a caller never waits forever for
     // an answer that is not coming — a stopped connection is refused inline and a server that does
     // not respond is bounded by the per-command deadline in the .cpp.

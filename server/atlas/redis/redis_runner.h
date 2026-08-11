@@ -46,6 +46,11 @@ public:
     void Submit(Ctx ctx, const RedisCommand& command, Completion completion = {},
                 CompletionPoster poster = {});
 
+    // Forwards RedisConnection::IsConfigured. 🔴 Read that comment before using it: "no cache was
+    // configured" and "the cache did not answer" arrive as the same `ok == false` and only one of
+    // them is worth a warning.
+    [[nodiscard]] bool IsConfigured() const noexcept { return connection_->IsConfigured(); }
+
 private:
     // Non-owning observer: the connection outlives the runner by construction (cpp-style.md 4.4).
     RedisConnection* connection_;

@@ -178,6 +178,16 @@ void CharacterCache::Put(atlas::Ctx ctx, atlas::UInt16 server_id, const CachedCh
 
 void CharacterCache::Invalidate(atlas::Ctx ctx, atlas::UInt16 server_id,
                                 atlas::CharacterId character_id) {
+    // 🔴 No cache configured means there is nothing to invalidate, which is not a failure (§10.2).
+    // Without this the inline refusal RedisConnection::Execute returns for an unconfigured host
+    // arrives as `ok == false` and every SUCCESSFUL equip logs the warning below — measured at
+    // 1098 warnings for 1098 requests (§16.1h). That is worse than noise: it is exactly how a real
+    // invalidation failure, the thing the warning exists to surface, gets buried. The one line
+    // game/main.cpp already logs at start-up is the authoritative statement of this fact.
+    if (!runner_->IsConfigured()) {
+        return;
+    }
+
     atlas::RedisCommand command{.verb = "DEL",
                                 .args = {CharacterCacheKey(server_id, character_id)}};
     runner_->Submit(ctx, command, [](const atlas::Ctx&, const atlas::RedisResult& result) {
