@@ -7,8 +7,10 @@
 
 ## 입력 → 출력
 
-실행은 레포 **루트**에서: `npm run gen:db` / 드리프트 검사 `npm run gen:db:check`.
+실행은 레포 **루트**에서: `npm run gen:db` / 드리프트 검사 `npm run gen:db:check` /
+dev DB 적용 `npm run gen:db:apply`(→ [라이브 DB 동기화](#라이브-db-동기화--dev-전용)).
 경로 · 네임스페이스는 전부 `template.ini [db-gen]` 이 소유한다 — 🔴 하드코딩된 게임/엔진 경로는 없다.
+🔴 **접속·환경 키는 ini 에 0개**이며 `.env` 에서 lazy 로 읽는다(`design §5.4` · `§10.7`).
 
 | ini 키 | 값 | 의미 |
 |---|---|---|
@@ -21,12 +23,14 @@
 
 | 파일 | 내용 |
 |---|---|
-| `schema.sql` | 테이블별 `CREATE TABLE IF NOT EXISTS` (PK · UNIQUE · FK · 인덱스 · 기본값). 🔴 **오프라인 스크립트**이며 마이그레이션이 아니다 — 수동 적용 |
+| `schema.sql` | 테이블별 `CREATE TABLE IF NOT EXISTS` (PK · UNIQUE · FK · 인덱스 · 기본값). 🔴 **오프라인 전체 생성 스크립트**이며 마이그레이션이 아니다 — 증분 변경은 `server/db/migrations/` 로 간다 |
 | `db_meta.h` | `enum class ColumnType : UInt8` (열거자는 `types.json` 정규화 타입 + `DateTime`/`Json`) · `struct ColumnMeta` · `constexpr CountPlaceholders()` |
 | `db_meta.cpp` | 헤더를 자기 완결적으로 만드는 TU 하나. 🔴 unity-OFF 빌드에서 include 누락을 잡는 게이트다 |
 | `<table>_row.h` | 테이블 하나당: 행 구조체 · 폭 `static_assert` · 컬럼 인덱스 상수 · `std::array<ColumnMeta, N>` · `string(N)` 길이 상수 · prepared SQL 상수 4종 + 바인딩 배열 + 대응 `static_assert` |
 | `<table>_row.cpp` | 위와 같은 자기 완결성 TU |
+| `db_all.h` | 집합 헤더 — `db_meta.h` + 전체 `<table>_row.h`. 🔴 목록도 생성물이다: "행 구조체 전부가 한 include 로 온다"는 주장은 테이블이 추가되는 순간 썩는다. `info_all.h` 와 같은 모양 |
 | `db_sources.cmake` | `set(ATLAS_GENERATED_DB_SOURCES ...)`. 🔴 소스 목록도 생성물이다 — 테이블을 추가해도 CMake 를 손대지 않고, 낡은 목록이 구조체를 조용히 빠뜨릴 수 없다 |
+| `server/db/migrations/{ts}_schema_sync.sql` | 🔴 **DB 에 닿았을 때만** 나오는 diff 결과. dev→prod 인수인계 매체이므로 **커밋한다**. 아래 절 참조 |
 
 `server/generated/db/CMakeLists.txt` 와 `tests/` 만 손으로 쓴 것이고, 나머지는 전부 생성물이다.
 
@@ -76,14 +80,40 @@
 붙으면 이 emitter 를 확장해 CRUD 함수 시그니처까지 뽑고, 그 함수들이 위 SQL 상수와 바인딩 배열을
 그대로 쓴다.
 
-**라이브 DB 마이그레이션 diff도 이식하지 않았다.** 원본(`project-tower`)은 `INFORMATION_SCHEMA` 를
-읽어 `ALTER` 를 만들고 실행까지 했지만 ① 실 DB 가 없고 ② 공개 레포에 접속 자격 증명이 얽히면 안
-된다. 남은 것은 원본 `--generate-only` 상당의 오프라인 `schema.sql` 출력뿐이다. EF Core 엔티티 /
-DbContext 타깃도 이 레포에는 소비자가 없어 가져오지 않았다(`template.ini` 에 해당 키가 없는 것이
-그 사실을 못 박는다).
+**EF Core 엔티티 / DbContext 타깃**도 이 레포에는 소비자가 없어 가져오지 않았다(`template.ini` 에
+해당 키가 없는 것이 그 사실을 못 박는다).
 
 **금지(Phase 1, `design §10`)**: 관계 자동 로딩 · lazy loading · change tracking / 유닛 오브 워크 ·
-마이그레이션 자동화. 🔴 ORM 은 범위가 폭발하는 대표 항목이다 — 위 목록에 없는 기능을 추가하지 않는다.
+**prod 마이그레이션 자동화**. 🔴 ORM 은 범위가 폭발하는 대표 항목이다 — 위 목록에 없는 기능을
+추가하지 않는다.
+
+## 라이브 DB 동기화 — 🔴 dev 전용
+
+`design §10.7` 이 SoT 다. 여기에 근거를 복제하지 않고 **동작만** 적는다.
+
+| 명령 | 하는 일 | DB 변경 |
+|---|---|---|
+| `npm run gen:db` | 위 생성물 + (DB 에 닿으면) diff → `server/db/migrations/{ts}_schema_sync.sql` | 🔴 **없다** — `INFORMATION_SCHEMA` `SELECT` 뿐 |
+| `npm run gen:db:apply` | 그 마이그레이션을 실행하고 `schema_migrations` 원장에 기록 | 있다. 🔴 `ATLAS_ENV=dev` 필수 |
+| `npm run gen:db:apply -- --allow-drops` | 위 + `MODIFY` / `DROP` 까지 실행 | 있다. 🔴 데이터 손실 경로 |
+| `npm run gen:db:check` | 오프라인 드리프트 검사 | 🔴 **접속 자체가 없다** |
+
+- 🔴 **`gen:db:apply` 는 `gen:all` · `gen:check` 조성에 없다.** 생성물을 갱신하려던 사람이 스키마를
+  적용하게 되면 안 된다.
+- 🔴 **`ATLAS_ENV != dev`(미설정 포함)면 소켓을 열기 전에 exit 1.** prod 는 사람이 SQL 파일을 읽고
+  적용한다 — 규약이 아니라 이 검사가 강제한다.
+- **파괴적 변경(`MODIFY` · `DROP`)은 파일에 `-- !destructive:` 표식이 붙은 주석으로 나온다.**
+  파일을 그대로 실행하면 건너뛴다. `--allow-drops` 만 표식을 떼고 실행한다.
+- **DB 미도달 · 드라이버 미설치 → diff 단계만 skip, exit 0.** 🔴 `gen:check` 가 `design §15.4`
+  게이트의 선두이고 CI 에는 MySQL 이 없다 — 여기서 접속을 시도하면 드리프트 게이트가 통째로 죽는다.
+  (`--apply` 에서는 같은 상황이 exit 1 이다. 적용이 조용히 성공한 척하면 안 된다.)
+- 🔴 **`mysql2` 는 이 레포의 의존성이 아니다.** 필요할 때만 `npm install mysql2 --no-save`.
+  없으면 위 규칙대로 diff 만 건너뛴다.
+- 접속 정보는 `server/.env` 에서 **lazy** 로 읽고, 🔴 **키 이름과 출처만 로그에 찍는다 — 값은 절대
+  찍지 않는다**(`design §5.4`).
+- 원장(`schema_migrations`)은 🔴 **diff 대상에서 제외**된다. 자기 자신을 마이그레이션하려 들면
+  매 실행마다 자신을 DROP 하려 한다.
+- 직전 마이그레이션과 본문이 같으면 새 파일을 만들지 않고 재사용한다.
 
 ## 🔴 생성기가 거부하는 것 (조용히 통과시키지 않는다)
 
@@ -116,10 +146,14 @@ DbContext 타깃도 이 레포에는 소비자가 없어 가져오지 않았다(
 
 | 플래그 | 용도 |
 |---|---|
-| `--check` | 드리프트 검사만. 파일을 쓰지 않고, 어긋나면 바뀔 파일 목록과 함께 exit 1 |
+| `--check` | 드리프트 검사만. 파일을 쓰지 않고, 🔴 **DB 에 접속하지 않고**, 어긋나면 바뀔 파일 목록과 함께 exit 1 |
+| `--apply` | 마이그레이션을 dev DB 에 실행. 🔴 `ATLAS_ENV=dev` 필수 |
+| `--allow-drops` | `--apply` 와 함께: `MODIFY` / `DROP` 까지 실행. 🔴 데이터 손실 경로 |
 | `--schema=<path>` | 입력 경로 오버라이드. **테스트 전용** |
 | `--cpp-output-dir=<path>` | C++ 출력 경로 오버라이드. **테스트 전용** |
 | `--sql-output=<path>` | SQL 출력 경로 오버라이드. **테스트 전용** |
+| `--migrations-dir=<path>` | 마이그레이션 출력 경로 오버라이드. **테스트 전용** |
+| `--env-file=<path>` | `.env` 경로 오버라이드. **테스트 전용** |
 
 ## 🔴 규칙
 
@@ -128,7 +162,9 @@ DbContext 타깃도 이 레포에는 소비자가 없어 가져오지 않았다(
 - **타입 매핑을 여기에 복제하지 않는다.** 정규화 → C++/MySQL 은 `tools/types.json` 이 SoT 다.
   `string(N)` · `datetime` · `json` 세 개만 표 밖의 특수 처리이며 emitter 한 곳에서 다룬다.
 - 🔴 **`int` / `long` 을 방출하지 않는다** (`cpp-style.md §4.1`). Windows LLP64 / Linux LP64.
-- 🔴 **`template.ini` 에 접속 정보를 넣지 않는다.** 이 생성기는 DB 에 접속하지 않는다.
+- 🔴 **`template.ini` 에 접속·환경 키를 넣지 않는다 — 지금 0개이고 계속 0개다.** 이 생성기가 DB 에
+  접속하게 된 뒤에도(`design §10.7`) 그 정보는 `.env` 에서 lazy 로 읽는다. `template.ini` 는
+  커밋되는 파일이므로 키를 하나 만드는 순간 그 값이 언젠가 레포에 들어온다.
 - 🔴 **데모 최소 집합(`design §3.3`)을 넘겨 스키마를 늘리지 않는다.** 현재 두 장이다 —
   `characters`(복합 PK · 그리드 좌표 · 성장 축 1개)와 `character_items`(인벤토리/장비, 슬롯 3종).
   테이블을 추가하려면 서버 코어의 어떤 미검증 경로를 행사하기 위해서인지 먼저 답해야 한다

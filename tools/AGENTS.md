@@ -9,7 +9,7 @@
 |---|---|---|---|
 | `pkt_generator` | `shared/contracts/**/*.cs` | `server/generated/pkt/` (C++ 패킷 · DTO · 필드별 write/read) | 구현 완료 (2026-08-06, wp6). 상세는 `pkt_generator/AGENTS.md` |
 | `db_generator` | `server/db/schema.json` | `server/generated/db/` (POD row 구조체 · `ColumnMeta` 배열 · `?` placeholder SQL 상수 · 바인딩 순서 배열) + `server/generated/db/schema.sql` | 구현 완료 (2026-08-06, wp7). 🔴 **CRUD 실행 API는 생성하지 않는다** — 커넥션 · 트랜잭션 · per-character lock 은 ORM 런타임 노드 몫(`design §10.1`). 상세는 `db_generator/AGENTS.md` |
-| `info_generator` | `shared/datas/**/*.csv` (5행: 필드명 / 타깃 `C`\|`S`\|`CS` / 타입 / 제약 / 데이터) | 정적 데이터 테이블 | **이번 슬라이스 밖** — 데모 게임 CSV(`design §3.3`)가 아직 없다. `npm run gen:info*` 스크립트도 없다. 입력 디렉터리(`shared/datas/`)와 `template.ini [data-gen]` 경로만 미리 잡아 뒀다 |
+| `info_generator` | `shared/datas/**/*.csv` (5행: 필드명 / 타깃 `C`\|`S`\|`CS` / 타입 / 제약 / 데이터) | `server/generated/info/` (컴파일-인 정적 테이블 · `InfoColumnMeta` 배열 · PK 이분 탐색 + 집합 헤더 `info_all.h`) | 구현 완료 (2026-08-11, wp11). 🔴 **DB 테이블이 아니다** — 행이 바이너리에 박히고 런타임 로드가 없다. 소비처는 `server/game/equip_service.cpp`(`design §8.2` 3층 서버 권위). 상세는 `info_generator/AGENTS.md` |
 
 공통 기반은 이 디렉터리에 있다.
 
@@ -17,7 +17,7 @@
 |---|---|
 | `config-loader.js` | `template.ini` + `types.json` 로드 → `paths` / `dataGen` / `dbGen` / `pktGen` / `types`. 파싱 실패 시 `[config] ERROR:` 출력 후 exit 1 |
 | `types.json` | **정규화 타입 → 엔진 타입 매핑의 SoT.** `cpp` · `mysql` · `csharp` · `gdscript` 4열 |
-| `all_generator.bat` | 일괄 실행 배치. 순서 `db → pkt`, 단계 실패 시 중단, `tools/logs/` 에 타임스탬프 로그. `GEN_BATCH_NO_PAUSE=1` 이면 종료 대기 없음 |
+| `all_generator.bat` | 일괄 실행 배치. 순서 `info → db → pkt`, 단계 실패 시 중단, `tools/logs/` 에 타임스탬프 로그. `GEN_BATCH_NO_PAUSE=1` 이면 종료 대기 없음 |
 
 ## `core_purity/` — 🔴 생성기가 아니라 검사기다
 
@@ -47,18 +47,28 @@ bash(`.github/workflows/ci.yml`) 인데 스크립트를 두 벌 쓰면 같은 �
 레포 **루트**에서 실행한다(`config-loader` 가 루트 기준으로 `template.ini` 를 찾는다).
 
 ```
-npm run gen:all      # db → pkt 전체 재생성
-npm run gen:db       # 개별
+npm run gen:all      # info → db → pkt 전체 재생성 (입력 데이터가 스키마·패킷보다 앞선다)
+npm run gen:info     # 개별
+npm run gen:db
 npm run gen:pkt
 npm run gen:check    # 드리프트 게이트 — 생성물이 입력과 어긋나면 exit 1
 
+npm run gen:db:apply # 🔴 dev 전용. 마이그레이션 SQL 을 실제 DB 에 적용한다. ATLAS_ENV=dev 가
+                     #    아니면 소켓을 열기 전에 exit 1 (AD §10.7). prod 는 사람이 직접 적용
 npm run check:core-purity   # 코어 순수성 게이트 — 코어가 게임을 알면 exit 1 (생성기 아님)
 ```
+🔴 라이브 DB 를 읽는 경로(`gen:db` 의 diff, `gen:db:apply`)만 `mysql2` 를 **지연 `require`** 한다.
+`devDependencies` 에 선언돼 있으므로 `npm ci` 하나면 갖춰진다 — 🔴 **선언하지 않고 "각자 설치"로
+두면 안 된다.** 그 경우 새 클론에서 `gen:db` 가 "DB 도달 불가"와 구분되지 않는 경고만 남기고
+**exit 0** 으로 끝나 마이그레이션이 조용히 생성되지 않는다. `gen:check` 는 이 경로를 타지 않으므로
+**DB 도 `mysql2` 도 없이 여전히 exit 0** 이다(오프라인 요구 유지).
 `tools\all_generator.bat` 은 `gen:all` 과 같은 순서를 배치로 돌리며 로그 파일을 남긴다.
 🔴 `gen:*` 스크립트는 **이 레포가 실제로 만드는 생성기**만 가리킨다. 아무도 쓰지 않을 생성기를 가리키는
 스크립트를 남겨 두면 `gen:check` 가 영구히 exit 1 이 되어 드리프트 게이트가 무의미해진다.
-현재 `gen:check` 는 exit 0 이다(db 6개 · pkt 10개, `changed=0`). 위험한 것은 **영원히 초록불이 될 수
-없는** 조성 — 존재하지 않는 생성기를 가리키는 스크립트다.
+현재 `gen:check` 는 exit 0 이다(info 6개 · db 6개 · pkt 10개, `changed=0`). 위험한 것은 **영원히
+초록불이 될 수 없는** 조성 — 존재하지 않는 생성기를 가리키는 스크립트다. 🔴 생성기 3종이 모두
+착지했으므로(2026-08-11) 이제 이 규칙이 막는 것은 **네 번째** 생성기를 미리 배선하는 일이다
+(`stack_generator` 승격 조건은 `design §14`).
 
 ## 🔴 규칙
 

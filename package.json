@@ -2,18 +2,25 @@
   "name": "project-atlas",
   "version": "0.1.0",
   "private": true,
-  "description": "project-atlas — C++ MMO game-server framework. Node data-pipeline tooling (pkt/db generators; info_generator lands with the demo-game CSVs in a later slice).",
+  "description": "project-atlas — C++ MMO game-server framework. Node data-pipeline tooling (info/db/pkt generators).",
   "license": "MIT",
   "engines": {
     "node": ">=22.0.0"
   },
   "scripts": {
+    "gen:info": "node tools/info_generator/info_generator.js",
+    "gen:info:check": "node tools/info_generator/info_generator.js --check",
     "gen:db": "node tools/db_generator/db_generator.js",
     "gen:db:check": "node tools/db_generator/db_generator.js --check",
+    "gen:db:apply": "node tools/db_generator/db_generator.js --apply",
     "gen:pkt": "node tools/pkt_generator/pkt_generator.js",
     "gen:pkt:check": "node tools/pkt_generator/pkt_generator.js --check",
-    "gen:all": "npm run gen:db && npm run gen:pkt",
-    "gen:check": "npm run gen:db:check && npm run gen:pkt:check",
-    "check:core-purity": "node tools/core_purity/core_purity.js"
+    "gen:all": "npm run gen:info && npm run gen:db && npm run gen:pkt",
+    "gen:check": "npm run gen:info:check && npm run gen:db:check && npm run gen:pkt:check",
+    "check:core-purity": "node tools/core_purity/core_purity.js",
+    "loadreport": "node tools/loadreport/loadreport.js"
+  },
+  "devDependencies": {
+    "mysql2": "^3.23.3"
   }
 }
