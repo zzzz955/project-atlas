@@ -51,6 +51,16 @@ struct LoadOptions {
     // pointing every connection at one character would measure it instead of the server.
     atlas::UInt64 first_character_id{900000};
     atlas::UInt16 server_id{1};
+
+    // The visualisation axis (§16.1a · loadgen/live_view.h). 🔴 BOTH DEFAULT TO OFF AND THAT IS
+    // LOAD BEARING: with neither set the harness allocates no metrics sink, starts no sampler
+    // thread and prints exactly what it printed for the §16.1 tables, so a run taken today is
+    // comparable with the numbers already in the document.
+    bool tui{false};
+    std::string sample_jsonl_path;
+    // Path to a file an external probe loop keeps current, in milliseconds. The harness reads it,
+    // never measures it — live_view.h says why.
+    std::string probe_file_path;
 };
 
 struct LoadStats {

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <format>
 #include <functional>
 #include <memory>
 #include <span>
@@ -24,6 +25,7 @@
 #include "game/handlers.h"
 #include "game/inventory.h"
 #include "generated/pkt/pkt_codec.h"
+#include "loadgen/live_view.h"
 
 namespace atlas_loadgen {
 
@@ -74,7 +76,7 @@ public:
                    atlas::Duration interval, atlas::TimePoint first_send,
                    atlas::TimePoint steady_start, atlas::TimePoint deadline,
                    std::atomic<std::size_t>& live, std::atomic<std::size_t>& peak,
-                   std::function<void()> on_finished)
+                   LiveMetrics* metrics, std::function<void()> on_finished)
         : strand_(atlas::asio::make_strand(io_context)),
           socket_(strand_),
           timer_(strand_),
@@ -88,6 +90,7 @@ public:
           deadline_(deadline),
           live_(live),
           peak_(peak),
+          metrics_(metrics),
           on_finished_(std::move(on_finished)) {}
 
     LoadConnection(const LoadConnection&) = delete;
@@ -118,6 +121,7 @@ private:
     void OnConnect(const atlas::ErrorCode& error) {
         if (error) {
             result_.connect_failed = true;
+            NoteError();
             Finish();
             return;
         }
@@ -187,6 +191,7 @@ private:
         if (!atlas::generated::ReadLe(cursor, result) ||
             result != static_cast<UInt8>(atlas_demo::LoadResult::Ok)) {
             result_.load_failed = true;
+            NoteError();
             Close();
             return;
         }
@@ -207,6 +212,7 @@ private:
             atlas::generated::ReadLe(cursor, exp) && atlas::generated::ReadLe(cursor, item_count);
         if (!decoded) {
             result_.load_failed = true;
+            NoteError();
             Close();
             return;
         }
@@ -234,6 +240,7 @@ private:
         // write 1 idle and the measurement would describe a cheaper transaction than the server's.
         if (taken < item_uids_.size()) {
             result_.load_failed = true;
+            NoteError();
             Close();
             return;
         }
@@ -253,18 +260,28 @@ private:
 
         if (code == atlas_demo::kEquipResponseUnavailable) {
             ++result_.responses_unavailable;
+            NoteError();
         } else if (code == static_cast<UInt8>(atlas_demo::EquipResult::Ok)) {
             ++result_.responses_ok;
         } else {
             ++result_.responses_refused;
+            NoteError();
         }
+
+        const UInt32 elapsed_us = static_cast<UInt32>(
+            std::chrono::duration_cast<atlas::Micros>(arrived - sent_at_).count());
 
         // 🔴 Only the steady window is sampled. Connect, the first character load and the driver's
         // first prepare of each statement all land in the warm-up and every one of them is a
         // once-per-run cost that would drag the tail of a short run.
         if (arrived >= steady_start_ && arrived <= deadline_) {
-            result_.latencies_us.push_back(static_cast<UInt32>(
-                std::chrono::duration_cast<atlas::Micros>(arrived - sent_at_).count()));
+            result_.latencies_us.push_back(elapsed_us);
+        }
+        // 🔴 The live view sees the WHOLE run including the warm-up, because its job is to show the
+        // run happening — the transition of §16.1c-① is precisely the thing a discarded prefix
+        // would hide. It is a separate histogram and it never feeds the reported percentiles.
+        if (metrics_ != nullptr) {
+            metrics_->RecordLatency(elapsed_us);
         }
 
         ScheduleNext();
@@ -352,6 +369,7 @@ private:
         }
         if (result_.established) {
             result_.transport_failed = true;
+            NoteError();
         }
         Close();
     }
@@ -383,6 +401,13 @@ private:
         }
     }
 
+    // Every failure the run counts is also a tick on the live view's cumulative error line.
+    void NoteError() noexcept {
+        if (metrics_ != nullptr) {
+            metrics_->RecordError();
+        }
+    }
+
     void BumpLive() {
         const std::size_t live = live_.fetch_add(1) + 1;
         std::size_t seen = peak_.load();
@@ -408,6 +433,9 @@ private:
 
     std::atomic<std::size_t>& live_;
     std::atomic<std::size_t>& peak_;
+    // 🔴 Null unless --tui or --sample-jsonl asked for a live view, and the null check is the whole
+    // cost of the visualisation axis on the default measurement path (§16.1a).
+    LiveMetrics* metrics_{nullptr};
     std::function<void()> on_finished_;
 
     atlas::FrameReader reader_;
@@ -455,6 +483,30 @@ LoadStats RunLoad(const LoadOptions& options) {
     std::atomic<std::size_t> remaining{options.connections};
     std::atomic<bool> watchdog_fired{false};
 
+    // 🔴 Nothing below is allocated, started or checked when neither flag is set — the default run
+    // is the one §16.1 measured, unchanged (§16.1a).
+    const bool live_view_wanted = options.tui || !options.sample_jsonl_path.empty();
+    std::unique_ptr<LiveMetrics> metrics;
+    std::unique_ptr<LiveView> live_view;
+    if (live_view_wanted) {
+        metrics = std::make_unique<LiveMetrics>();
+        LiveViewOptions view_options;
+        view_options.tui = options.tui;
+        view_options.jsonl_path = options.sample_jsonl_path;
+        view_options.probe_file_path = options.probe_file_path;
+        // The run's own conditions travel with its samples. The ones a run cannot know about
+        // itself — host, container, MySQL durability settings — stay in §16.1b and reach the report
+        // as notes; a page of curves with no conditions is as unreadable as a table with none.
+        view_options.meta_json = std::format(
+            R"({{"kind":"meta","harness":"atlas_loadgen","connections":{},"rate_per_second":{},)"
+            R"("duration_seconds":{},"warmup_seconds":{},"io_threads":{},"host":"{}","port":{},)"
+            R"("server_id":{},"first_character_id":{},"sample_interval_ms":1000}})",
+            options.connections, options.rate_per_second, options.duration_seconds,
+            options.warmup_seconds, options.io_threads, options.host, options.port,
+            options.server_id, options.first_character_id);
+        live_view = std::make_unique<LiveView>(std::move(view_options), *metrics, live);
+    }
+
     atlas::SteadyTimer watchdog(io_context);
     watchdog.expires_at(deadline + kWatchdogGrace);
 
@@ -469,7 +521,8 @@ LoadStats RunLoad(const LoadOptions& options) {
                      static_cast<atlas::Duration::rep>(options.connections));
         connections.push_back(std::make_shared<LoadConnection>(
             io_context, endpoint, options.first_character_id + static_cast<UInt64>(index), interval,
-            first_send, steady_start, deadline, live, peak, [&io_context, &remaining, &watchdog] {
+            first_send, steady_start, deadline, live, peak, metrics.get(),
+            [&io_context, &remaining, &watchdog] {
                 if (remaining.fetch_sub(1) != 1) {
                     return;
                 }
@@ -494,6 +547,10 @@ LoadStats RunLoad(const LoadOptions& options) {
             }
         }));
 
+    if (live_view) {
+        live_view->Start();
+    }
+
     for (const std::shared_ptr<LoadConnection>& connection : connections) {
         connection->Start();
     }
@@ -506,6 +563,9 @@ LoadStats RunLoad(const LoadOptions& options) {
     }
     for (std::thread& worker : workers) {
         worker.join();
+    }
+    if (live_view) {
+        live_view->Stop();
     }
 
     for (const std::shared_ptr<LoadConnection>& connection : connections) {

@@ -29,6 +29,16 @@
 //
 //     atlas_loadgen --connections 64 --duration 20 --warmup 3 --io-threads 8
 //
+// Two optional flags add the visualisation axis of §16.1a and nothing else:
+//
+//     --tui                    an ANSI screen refreshed once a second, off a thread of its own
+//     --sample-jsonl <path>    one JSON record per second, the input of tools/loadreport
+//     --probe-file <path>      a file an external fsync-probe loop keeps current, transcribed
+//                              into every sample (§16.1c-① is the regime discriminator)
+//
+// 🔴 With none of them the harness behaves exactly as it did for the §16.1 tables — no sink, no
+// sampler thread, same stdout. That is what keeps a run taken today comparable with them.
+//
 // 🔴 IT SEEDS ITS OWN DATA AND DELETES IT AGAIN. The scenario is connect -> load character -> equip
 // in a loop, and equip needs a character that owns two items. Seeding a dedicated block of
 // character ids (one per connection) is what keeps the per-character lock of §10.5 out of the
@@ -111,11 +121,14 @@ void Seed(atlas::Connection& connection, UInt16 server_id, UInt64 first_characte
         // leave write 1 idle and the harness would be timing a cheaper transaction than the server
         // actually runs.
         const std::array<DbValue, 6> worn{
-            DbValue{static_cast<UInt64>(server_id)},
-            DbValue{character_id},
+            DbValue{static_cast<UInt64>(server_id)}, DbValue{character_id},
             DbValue{FirstItemOf(character_id)},
-            DbValue{UInt64{11}},
-            DbValue{UInt64{1}},
+            // 🔴 1001 / 1002 are `Rusty Sword` / `Iron Sword`, slot 1, out of
+            // shared/datas/item.csv. The equip path refuses an item_id the static data does not
+            // define and an item claimed for the wrong slot (§8.2 layer 3), so seeding arbitrary
+            // ids here would have the harness measuring the refusal path instead of the three-write
+            // transaction.
+            DbValue{UInt64{1001}}, DbValue{UInt64{1}},
             DbValue{static_cast<UInt64>(static_cast<UInt8>(atlas_demo::EquipSlot::Weapon))}};
         connection.Prepare(atlas::generated::kCharacterItemsInsertSql).Execute(worn);
 
@@ -123,7 +136,7 @@ void Seed(atlas::Connection& connection, UInt16 server_id, UInt64 first_characte
             DbValue{static_cast<UInt64>(server_id)},
             DbValue{character_id},
             DbValue{SecondItemOf(character_id)},
-            DbValue{UInt64{12}},
+            DbValue{UInt64{1002}},
             DbValue{UInt64{1}},
             DbValue{static_cast<UInt64>(static_cast<UInt8>(atlas_demo::EquipSlot::None))}};
         connection.Prepare(atlas::generated::kCharacterItemsInsertSql).Execute(spare);
@@ -177,9 +190,17 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
         atlas::LogInit(log_config);
 
         atlas_loadgen::LoadOptions options;
-        for (std::size_t index = 1; index + 1 < static_cast<std::size_t>(argc); index += 2) {
+        const std::size_t argument_count = static_cast<std::size_t>(argc);
+        for (std::size_t index = 1; index < argument_count; ++index) {
             const std::string_view key(argv[index]);
+            // The only option without a value, so it is taken before the pairing rule below.
+            if (key == "--tui") {
+                options.tui = true;
+                continue;
+            }
+            ATLAS_CHECK(index + 1 < argument_count, "option '{}' needs a value", key);
             const std::string_view value(argv[index + 1]);
+            ++index;
             if (key == "--host") {
                 options.host = std::string(value);
             } else if (key == "--port") {
@@ -198,6 +219,10 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
                 options.server_id = static_cast<UInt16>(ParseUnsigned(value));
             } else if (key == "--first-character") {
                 options.first_character_id = ParseUnsigned(value);
+            } else if (key == "--sample-jsonl") {
+                options.sample_jsonl_path = std::string(value);
+            } else if (key == "--probe-file") {
+                options.probe_file_path = std::string(value);
             } else {
                 ATLAS_THROW(atlas::Exception, "unknown option '{}'", key);
             }
