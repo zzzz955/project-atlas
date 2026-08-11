@@ -26,3 +26,21 @@ chat
 item
 inventory
 equip
+
+# 2026-08-11, 캐시 축(§10.2) 착지와 함께 추가. `atlas/redis` 는 명령을 실행할 뿐
+# **키 문자열을 모른다** — `ranking:{server_id}:exp` 는 게임의 데이터 모델이고
+# `server/game/ranking.{h,cpp}` 가 소유한다. 코어가 이 단어를 알게 되는 순간
+# 프레임워크가 게임의 순위 개념을 갖게 된다.
+# 🔴 `cache` 는 넣지 않았다 — `atlas/db` 의 prepared statement 캐시가 코어 어휘로 이미 있다.
+ranking
+
+# 2026-08-11, info_generator(§14) 착지와 함께 추가. `shared/datas/item.csv` 가 정의하는
+# **장착 슬롯의 이름**이다. 코어는 슬롯이 몇 개인지도, 그것이 무기인지 방어구인지도 모른다 —
+# `server/generated/info/` 는 계약(생성) 층이고, 그 데이터를 해석하는 코드는
+# `server/game/equip_service.cpp` 가 소유한다.
+# 🔴 `info` 는 넣지 않는다 — `ATLAS_LOG_INFO` 가 코어 전역에 있어 부분 문자열 매칭에 전부 걸린다.
+#    `item_info` · `ItemInfoRow` 는 이미 위의 `item` 이 잡는다.
+# 🔴 `slot` 도 넣지 않는다 — `atlas/core/ctx.cpp` 의 thread_local 슬롯 설명이 코어 어휘다.
+weapon
+armor
+trinket

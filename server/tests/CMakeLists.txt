@@ -15,6 +15,13 @@ target_link_libraries(atlas_net_tests PRIVATE atlas_net GTest::gtest GTest::gtes
 add_executable(atlas_proto_tests proto_frame_test.cpp)
 target_link_libraries(atlas_proto_tests PRIVATE atlas_proto GTest::gtest GTest::gtest_main)
 
+# architecture-design.md §14 — the third generator's output. It needs no database and no server, so
+# it links the generated table alone: this suite is about the DATA and the target filter, while what
+# the equip path does with the data is asserted in atlas_game_tests.
+add_executable(atlas_info_tests info_table_test.cpp)
+target_link_libraries(atlas_info_tests
+    PRIVATE atlas_generated_info GTest::gtest GTest::gtest_main)
+
 add_executable(atlas_config_tests config_test.cpp)
 target_link_libraries(atlas_config_tests PRIVATE atlas_config GTest::gtest GTest::gtest_main)
 # 🔴 The committed server.ini is located by an absolute path baked in at configure time. Deriving it
@@ -55,6 +62,16 @@ target_link_libraries(atlas_tx_tests
 add_executable(atlas_game_tests game_equip_test.cpp)
 target_link_libraries(atlas_game_tests PRIVATE atlas_demo GTest::gtest GTest::gtest_main)
 
+# architecture-design.md §10.2 — the cache axis: the ranking, the read cache, and the case the whole
+# section rests on (a character loads while Redis is unreachable).
+#
+# 🔴 Its own executable, and here the reason is stronger than the usual unity-batch one: this suite
+# stands up GameServer instances with a DELIBERATELY DEAD Redis endpoint, and the file-local helpers
+# it shares a name with in game_equip_test.cpp (a config loader, a TestClient, a fixture) would
+# collide in one anonymous namespace with unity build ON.
+add_executable(atlas_cache_tests game_cache_test.cpp)
+target_link_libraries(atlas_cache_tests PRIVATE atlas_demo GTest::gtest GTest::gtest_main)
+
 # 🔴 vcpkg compiles libmariadb's plugin directory in as an absolute path into its own build tree,
 # which does not exist once the port is installed. MySQL 8.4 authenticates with
 # caching_sha2_password and this driver ships that as a separate plugin DLL, so a client that cannot
@@ -72,10 +89,13 @@ if(EXISTS "${ATLAS_MARIADB_PLUGIN_DIR}")
         ATLAS_MARIADB_PLUGIN_DIR="${ATLAS_MARIADB_PLUGIN_DIR}")
     target_compile_definitions(atlas_game_tests PRIVATE
         ATLAS_MARIADB_PLUGIN_DIR="${ATLAS_MARIADB_PLUGIN_DIR}")
+    target_compile_definitions(atlas_cache_tests PRIVATE
+        ATLAS_MARIADB_PLUGIN_DIR="${ATLAS_MARIADB_PLUGIN_DIR}")
 endif()
 
 include(GoogleTest)
 gtest_discover_tests(atlas_core_tests)
+gtest_discover_tests(atlas_info_tests)
 gtest_discover_tests(atlas_net_tests)
 gtest_discover_tests(atlas_proto_tests)
 gtest_discover_tests(atlas_config_tests)
@@ -93,3 +113,59 @@ gtest_discover_tests(atlas_tx_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:
 # Same rule again for the game suite: the equip cases and the end-to-end socket run need a real
 # database, the domain-model cases do not.
 gtest_discover_tests(atlas_game_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: ")
+
+# 🔴 And again for the cache suite, which needs BOTH a database and a Redis. The gate treats a
+# Skipped test as a failure whenever a database was reachable (§15.4), and since Redis is now a
+# default service of the compose stack (§15.3) a run that reaches MySQL but not Redis is a broken
+# environment rather than an acceptable partial run. The codec case below needs neither and always
+# runs, so this suite is never entirely silent.
+gtest_discover_tests(atlas_cache_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: ")
+
+# ── info_generator itself is under test ──────────────────────────────────────────────────────
+#
+# 🔴 A data generator whose value is "it refuses bad data" has to be shown refusing it. A planner
+# edits these CSVs, not a programmer, and the only thing standing between a typo and a silently
+# wrong table is the message this generator prints — so each fixture is asserted twice: it must
+# EXIT NON-ZERO and it must name `file:line:column`. A generator that dies without a location is
+# useless against a thousand-row spreadsheet, and PASS_REGULAR_EXPRESSION alone would ignore the
+# exit status, so neither assertion can carry the other.
+#
+# The fixtures live under tools/info_generator/testdata/, outside shared/datas/, so a normal
+# `npm run gen:info` never sees them, and the output goes to the build tree so it cannot touch
+# server/generated/info/.
+set(ATLAS_REPO_ROOT ${CMAKE_SOURCE_DIR}/..)
+find_program(ATLAS_NODE_EXECUTABLE node)
+if(ATLAS_NODE_EXECUTABLE)
+    # fixture directory -> the `file:line:column` the message must carry.
+    set(ATLAS_INFO_FIXTURES
+        "missing_constraint_row=item.csv:5:1"   # header row missing (constraint row)
+        "bad_target=item.csv:2:2"               # `SC` where a target belongs
+        "unknown_type=item.csv:3:3"             # `int` — not a key of types.json (§4.1)
+        "no_primary_key=item.csv:4:1"           # no column marked PK
+        "duplicate_key=item.csv:6:1"            # the same id twice
+        "cell_count=item.csv:5:1"               # 5 cells against a 3-field header
+        "bad_value=item.csv:5:3")               # -1 in a uint8 column
+
+    foreach(fixture IN LISTS ATLAS_INFO_FIXTURES)
+        string(REPLACE "=" ";" parts "${fixture}")
+        list(GET parts 0 name)
+        list(GET parts 1 location)
+        set(command
+            ${ATLAS_NODE_EXECUTABLE} ${ATLAS_REPO_ROOT}/tools/info_generator/info_generator.js
+            --datas-dir=${ATLAS_REPO_ROOT}/tools/info_generator/testdata/${name}
+            --cpp-output-dir=${CMAKE_CURRENT_BINARY_DIR}/info_reject_${name})
+
+        add_test(NAME info.generator_rejects_${name}_exit COMMAND ${command})
+        set_tests_properties(info.generator_rejects_${name}_exit PROPERTIES WILL_FAIL TRUE)
+
+        string(REPLACE "." "\\." escaped "${location}")
+        add_test(NAME info.generator_rejects_${name}_location COMMAND ${command})
+        set_tests_properties(info.generator_rejects_${name}_location PROPERTIES
+            PASS_REGULAR_EXPRESSION "${escaped}")
+    endforeach()
+else()
+    # 🔴 Announced, never silent: a skipped gate that says nothing is a dead gate.
+    message(WARNING
+        "node not found - the info_generator rejection tests are NOT registered. node is required "
+        "by this repository anyway (npm run gen:*), so this is a broken setup.")
+endif()

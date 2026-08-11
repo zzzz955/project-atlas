@@ -21,6 +21,14 @@ struct SecretConfig {
     std::string db_password;
     std::string jwks_url;
 
+    // architecture-design.md §10.2 — the cache. 🔴 Host and credentials only; what Redis is
+    // allowed to be USED for is a design rule, not a setting, and there is deliberately no knob
+    // here that could turn the forbidden roles on. An empty host means "no cache configured", and
+    // the layer that wants one decides what to do about it — this one only transports.
+    std::string redis_host;
+    UInt16 redis_port{0};
+    std::string redis_password;
+
     // `ATLAS_DB_TLS_NO_VERIFY` — not a secret, but it belongs to the same per-deployment axis as
     // the DB host, and server.ini cannot carry it because that file is baked into the image (§5.4).
     // 🔴 Defaults to false = verify. Only the literal string "1" turns it on, so a typo relaxes

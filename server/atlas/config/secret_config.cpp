@@ -39,6 +39,22 @@ std::string ReadSecretString(const char* name) {
     return ReadSecretEnv(name).value_or(std::string{});
 }
 
+// 0 when the key is unset. 🔴 The offending text is deliberately absent from the failure message:
+// everything read here is treated as a secret, and an error path that echoes its input is exactly
+// how a credential ends up in a log file that outlives the incident.
+UInt16 ReadSecretPort(const char* name) {
+    const std::string port = ReadSecretString(name);
+    if (port.empty()) {
+        return 0;
+    }
+    UInt16 value{0};
+    const std::from_chars_result result =
+        std::from_chars(port.data(), port.data() + port.size(), value);
+    ATLAS_CHECK(result.ec == std::errc{} && result.ptr == port.data() + port.size(),
+                "{} is not a valid port number", name);
+    return value;
+}
+
 void AppendSecretPresence(std::string& out, std::string_view name, bool present) {
     if (!out.empty()) {
         out += ", ";
@@ -59,19 +75,13 @@ SecretConfig SecretConfig::FromEnvironment() {
     // 🔴 Exact "1" only. An opt-out of certificate verification must not be reachable by "true",
     // "yes" or a stray space — every spelling this does not accept keeps verification on.
     config.db_tls_no_verify = ReadSecretString("ATLAS_DB_TLS_NO_VERIFY") == "1";
+    config.db_port = ReadSecretPort("ATLAS_DB_PORT");
 
-    const std::string port = ReadSecretString("ATLAS_DB_PORT");
-    if (!port.empty()) {
-        UInt16 value{0};
-        const std::from_chars_result result =
-            std::from_chars(port.data(), port.data() + port.size(), value);
-        // 🔴 The offending text is deliberately absent from this message. Everything read here is
-        // treated as a secret, and an error path that echoes its input is exactly how a credential
-        // ends up in a log file that outlives the incident.
-        ATLAS_CHECK(result.ec == std::errc{} && result.ptr == port.data() + port.size(),
-                    "ATLAS_DB_PORT is not a valid port number");
-        config.db_port = value;
-    }
+    // §10.2 — the cache. Same treatment as the database keys, including the port: an unset value
+    // is empty rather than a failure, and the caller decides whether it can run without one.
+    config.redis_host = ReadSecretString("ATLAS_REDIS_HOST");
+    config.redis_password = ReadSecretString("ATLAS_REDIS_PASSWORD");
+    config.redis_port = ReadSecretPort("ATLAS_REDIS_PORT");
 
     return config;
 }
@@ -84,6 +94,9 @@ std::string SecretConfig::DescribePresence() const {
     AppendSecretPresence(summary, "ATLAS_DB_USER", !db_user.empty());
     AppendSecretPresence(summary, "ATLAS_DB_PASSWORD", !db_password.empty());
     AppendSecretPresence(summary, "ATLAS_JWKS_URL", !jwks_url.empty());
+    AppendSecretPresence(summary, "ATLAS_REDIS_HOST", !redis_host.empty());
+    AppendSecretPresence(summary, "ATLAS_REDIS_PORT", redis_port != 0);
+    AppendSecretPresence(summary, "ATLAS_REDIS_PASSWORD", !redis_password.empty());
     return summary;
 }
 

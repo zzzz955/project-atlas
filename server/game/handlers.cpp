@@ -23,9 +23,12 @@
 #include "atlas/net/session.h"
 #include "atlas/proto/frame.h"
 #include "atlas/proto/session_framing.h"
+#include "atlas/redis/connection.h"
 #include "game/character.h"
+#include "game/character_cache.h"
 #include "game/equip_service.h"
 #include "game/inventory.h"
+#include "game/ranking.h"
 #include "generated/db/character_items_row.h"
 #include "generated/db/characters_row.h"
 #include "generated/pkt/pkt_codec.h"
@@ -42,41 +45,21 @@ using atlas::UInt32;
 using atlas::UInt64;
 using atlas::UInt8;
 
-// Runs on a DB thread with a leased connection.
+// How long start-up waits for the cache before carrying on without it. 🔴 Bounded and non-fatal:
+// see the comment at the call site in Start().
+constexpr atlas::Seconds kRedisReadyBudget{2};
+
+// The WARM path's only write. Runs on a DB thread with a leased connection.
 //
-// 🔴 The login timestamp is written inside the same transaction that reads the character and its
-// items, so a reader never sees "logged in at T" next to a character state from before T.
-void LoadCharacterOnDbThread(atlas::Ctx& ctx, atlas::Connection& connection, UInt16 server_id,
-                             atlas::CharacterId character_id, CharacterSnapshot& out) {
-    const std::array<DbValue, 2> key{DbValue{static_cast<UInt64>(server_id)},
-                                     DbValue{atlas::IdValue(character_id)}};
-
-    atlas::Transaction transaction(connection, ctx);
-
-    const std::vector<DbRow> character_rows =
-        connection.Prepare(atlas::generated::kCharactersSelectByPkSql).Query(key);
-    if (character_rows.empty()) {
-        // Nothing was written, so letting the scope unwind is the rollback (§10).
-        out.result = LoadResult::NotFound;
-        return;
-    }
-
-    atlas::generated::CharactersRow character = CharactersRowFromDb(character_rows.front());
-    character.last_login_at_ = PersistableNow();
-    connection.Prepare(atlas::generated::kCharactersUpdateByPkSql)
-        .Execute(CharactersUpdateParameters(character));
-
-    const std::vector<DbRow> item_rows = connection.Prepare(kSelectItemsByCharacterSql).Query(key);
-    out.items.clear();
-    out.items.reserve(item_rows.size());
-    for (const DbRow& row : item_rows) {
-        out.items.push_back(ItemFromRow(CharacterItemsRowFromDb(row)));
-    }
-
-    transaction.Commit();
-
-    out.character = std::move(character);
-    out.result = LoadResult::Ok;
+// 🔴 A single-row UPDATE is atomic without a transaction, so there is no scope here — and the one
+// column it touches is the one a login owns. See kTouchCharacterLoginSql for why the cold path's
+// whole-row UPDATE must not be reused from a cached copy.
+void TouchLoginOnDbThread(atlas::Connection& connection, UInt16 server_id,
+                          atlas::CharacterId character_id) {
+    const std::array<DbValue, 3> parameters{DbValue{PersistableNow()},
+                                            DbValue{static_cast<UInt64>(server_id)},
+                                            DbValue{atlas::IdValue(character_id)}};
+    connection.Prepare(kTouchCharacterLoginSql).Execute(parameters);
 }
 
 // ── Payload codecs ───────────────────────────────────────────────────────────────────────────
@@ -123,7 +106,70 @@ std::vector<Byte> EncodeEquipResponse(UInt8 result, UInt64 item_uid, UInt8 slot,
     return payload;
 }
 
+std::vector<Byte> EncodeRankingResponse(RankingResult result,
+                                        const std::vector<RankEntry>& entries) {
+    std::vector<Byte> payload;
+    atlas::generated::WriteLe(payload, static_cast<UInt8>(result));
+    if (result != RankingResult::Ok) {
+        return payload;
+    }
+    const UInt16 count = atlas::generated::WriteLength(payload, entries.size());
+    for (std::size_t index = 0; index < static_cast<std::size_t>(count); ++index) {
+        atlas::generated::WriteLe(payload, atlas::IdValue(entries[index].character_id));
+        atlas::generated::WriteLe(payload, entries[index].exp);
+    }
+    return payload;
+}
+
 }  // namespace
+
+// ── The cold load ────────────────────────────────────────────────────────────────────────────
+
+// 🔴 The login timestamp is written inside the same transaction that reads the character and its
+// items, so a reader never sees "logged in at T" next to a character state from before T.
+void LoadCharacterOnDbThread(atlas::Ctx& ctx, atlas::Connection& connection, UInt16 server_id,
+                             atlas::CharacterId character_id, CharacterSnapshot& out,
+                             ExpRanking* ranking, const LoadFaultInjector& before_commit) {
+    const std::array<DbValue, 2> key{DbValue{static_cast<UInt64>(server_id)},
+                                     DbValue{atlas::IdValue(character_id)}};
+
+    atlas::Transaction transaction(connection, ctx);
+
+    const std::vector<DbRow> character_rows =
+        connection.Prepare(atlas::generated::kCharactersSelectByPkSql).Query(key);
+    if (character_rows.empty()) {
+        // Nothing was written, so letting the scope unwind is the rollback (§10).
+        out.result = LoadResult::NotFound;
+        return;
+    }
+
+    atlas::generated::CharactersRow character = CharactersRowFromDb(character_rows.front());
+    character.last_login_at_ = PersistableNow();
+    connection.Prepare(atlas::generated::kCharactersUpdateByPkSql)
+        .Execute(CharactersUpdateParameters(character));
+
+    const std::vector<DbRow> item_rows = connection.Prepare(kSelectItemsByCharacterSql).Query(key);
+    out.items.clear();
+    out.items.reserve(item_rows.size());
+    for (const DbRow& row : item_rows) {
+        out.items.push_back(ItemFromRow(CharacterItemsRowFromDb(row)));
+    }
+
+    if (before_commit) {
+        before_commit();
+    }
+    transaction.Commit();
+
+    // 🔴 EVERYTHING BELOW THIS LINE IS REACHABLE ONLY BECAUSE THE COMMIT RETURNED. That is the
+    // ordering the ranking depends on (§10.2): the sorted set is a copy, and recording a number
+    // the database might still refuse would leave the copy holding a value that never existed.
+    if (ranking != nullptr) {
+        ranking->Record(ctx, server_id, character.character_id_, character.exp_);
+    }
+
+    out.character = std::move(character);
+    out.result = LoadResult::Ok;
+}
 
 // ── HandlerTable ─────────────────────────────────────────────────────────────────────────────
 
@@ -144,11 +190,17 @@ const HandlerTable::Handler* HandlerTable::Find(atlas::UInt16 opcode) const noex
 
 // ── GameServer ───────────────────────────────────────────────────────────────────────────────
 
-GameServer::GameServer(const Options& options, const atlas::DbConnectionConfig& db_config)
+GameServer::GameServer(const Options& options, const atlas::DbConnectionConfig& db_config,
+                       const atlas::RedisConnectionConfig& redis_config)
     : options_(options),
       pool_(db_config, options.db_pool_size == 0 ? std::size_t{1} : options.db_pool_size),
       db_runner_(pool_, options.db_threads, atlas::Seconds{5}),
-      io_runner_(options.io_workers) {
+      io_runner_(options.io_workers),
+      redis_(io_runner_.Context(), redis_config),
+      redis_runner_(redis_),
+      ranking_(redis_runner_),
+      character_cache_(redis_runner_),
+      redis_enabled_(!redis_config.host.empty()) {
     acceptor_ = std::make_unique<atlas::SessionAcceptor>(
         io_runner_.Context(), options.endpoint,
         [this](const std::shared_ptr<atlas::Session>& session) { OnAccept(session); });
@@ -165,6 +217,18 @@ void GameServer::Start() {
     acceptor_->Start();
     db_runner_.Start();
     io_runner_.Start();
+    if (redis_enabled_) {
+        // 🔴 After io_runner_.Start(), because the connection runs ON that context — and the wait
+        // is bounded and NON-FATAL. A cache that refused to come up would have turned an optional
+        // copy into a start-up dependency, which is exactly what §10.2 says it must not be.
+        redis_.Start();
+        if (!redis_.WaitUntilReady(kRedisReadyBudget)) {
+            ATLAS_LOG_WARN(
+                "redis is configured but did not answer within {}s - the character cache and the "
+                "ranking degrade to the database until it does",
+                kRedisReadyBudget.count());
+        }
+    }
     ATLAS_LOG_INFO("GAME listening on {}:{} (server_id={}, io_workers={}, db_threads={})",
                    acceptor_->LocalEndpoint().address().to_string(),
                    acceptor_->LocalEndpoint().port(), options_.server_id, io_runner_.WorkerCount(),
@@ -201,7 +265,11 @@ void GameServer::Stop() noexcept {
     //    releasing the io_context first would strand jobs that had already committed.
     db_runner_.Stop();
 
-    // 4. The I/O pool.
+    // 4. The cache, before the I/O pool. Its reconnect loop is an outstanding operation on that
+    //    io_context, so releasing the work guard first leaves a queue that never drains.
+    redis_.Stop();
+
+    // 5. The I/O pool.
     io_runner_.Stop();
 }
 
@@ -224,6 +292,10 @@ void GameServer::RegisterHandlers() {
                        [this](const std::shared_ptr<atlas::Session>& session,
                               const std::shared_ptr<SessionState>& state,
                               const atlas::Frame& frame) { HandleEquip(session, state, frame); });
+    handlers_.Register(kOpRankingRequest,
+                       [this](const std::shared_ptr<atlas::Session>& session,
+                              const std::shared_ptr<SessionState>& state,
+                              const atlas::Frame& frame) { HandleRanking(session, state, frame); });
 }
 
 void GameServer::OnAccept(const std::shared_ptr<atlas::Session>& session) {
@@ -303,25 +375,60 @@ void GameServer::HandleCharacterLoad(const std::shared_ptr<atlas::Session>& sess
     // request derives its identity from the connection instead of from the packet. That is the half
     // of server authority (§8.2 layer 3) this slice can actually claim.
     atlas::Ctx ctx = MakeCtx(session, state);
-    ctx.character_id = static_cast<atlas::CharacterId>(requested);
+    const atlas::CharacterId character_id = static_cast<atlas::CharacterId>(requested);
+    ctx.character_id = character_id;
 
+    // 🔴 The cache is asked FIRST and its answer only chooses how much work the database job does
+    // — it never replaces the job. A login is a write, and no copy is allowed to absorb a write.
+    // The completion below lands back on this session's strand, so `state` still needs no lock.
+    character_cache_.Get(
+        ctx, options_.server_id, character_id,
+        [this, session, state, ctx, character_id](std::optional<CachedCharacter> cached) {
+            SubmitCharacterLoad(session, state, ctx, character_id, std::move(cached));
+        },
+        PosterFor(session));
+}
+
+void GameServer::SubmitCharacterLoad(const std::shared_ptr<atlas::Session>& session,
+                                     const std::shared_ptr<SessionState>& state,
+                                     const atlas::Ctx& ctx, atlas::CharacterId character_id,
+                                     std::optional<CachedCharacter> cached) {
     auto snapshot = std::make_shared<CharacterSnapshot>();
+    auto warm = std::make_shared<std::optional<CachedCharacter>>(std::move(cached));
+    const bool was_warm = warm->has_value();
     const UInt16 server_id = options_.server_id;
+
     const bool queued = db_runner_.Submit(
         ctx,
-        [snapshot, server_id, requested](atlas::Ctx& job_ctx, atlas::Connection* connection) {
+        [this, snapshot, warm, server_id, character_id](atlas::Ctx& job_ctx,
+                                                        atlas::Connection* connection) {
             if (connection == nullptr) {
                 snapshot->result = LoadResult::Unavailable;
                 return;
             }
-            LoadCharacterOnDbThread(job_ctx, *connection, server_id,
-                                    static_cast<atlas::CharacterId>(requested), *snapshot);
+            if (warm->has_value()) {
+                // 🔴 A warm answer is a COPY, so a character deleted inside the TTL still reads
+                // back Ok here. That is what a cache is; the TTL is the bound and the write path
+                // invalidates every change this game can actually make.
+                TouchLoginOnDbThread(*connection, server_id, character_id);
+                snapshot->character = (*warm)->character;
+                snapshot->items = (*warm)->items;
+                snapshot->result = LoadResult::Ok;
+                return;
+            }
+            LoadCharacterOnDbThread(job_ctx, *connection, server_id, character_id, *snapshot,
+                                    &ranking_);
         },
-        [session, state, snapshot](const atlas::Ctx&) {
+        [this, session, state, snapshot, was_warm, server_id](const atlas::Ctx& done_ctx) {
             // On the session strand, so touching `state` and the send counter needs no lock.
             if (snapshot->result == LoadResult::Ok) {
                 state->loaded = true;
                 state->character_id = snapshot->character.character_id_;
+                if (!was_warm) {
+                    character_cache_.Put(done_ctx, server_id,
+                                         CachedCharacter{.character = snapshot->character,
+                                                         .items = snapshot->items});
+                }
             }
             ++state->send_seq;
             atlas::SendFrame(*session, kOpCharacterLoadResponse, state->send_seq,
@@ -375,10 +482,17 @@ void GameServer::HandleEquip(const std::shared_ptr<atlas::Session>& session,
             }
             *outcome = equip_service_.Equip(job_ctx, *connection, request);
         },
-        [session, state, outcome, request](const atlas::Ctx&) {
+        [this, session, state, outcome, request](const atlas::Ctx& done_ctx) {
             const UInt8 code = outcome->has_value() ? static_cast<UInt8>((*outcome)->result)
                                                     : kEquipResponseUnavailable;
             const UInt64 unequipped = outcome->has_value() ? (*outcome)->unequipped_item_uid : 0;
+            // 🔴 Invalidate, never update. The transaction has committed by the time this runs, so
+            // the durable state is already the new one and the copy is simply wrong — dropping it
+            // makes the next reader ask the database, while patching it would be a second writer
+            // of the same fact (§10.2).
+            if (outcome->has_value() && (*outcome)->result == EquipResult::Ok) {
+                character_cache_.Invalidate(done_ctx, options_.server_id, request.character_id);
+            }
             ++state->send_seq;
             atlas::SendFrame(*session, kOpEquipResponse, state->send_seq,
                              EncodeEquipResponse(code, request.item_uid,
@@ -389,6 +503,33 @@ void GameServer::HandleEquip(const std::shared_ptr<atlas::Session>& session,
     if (!queued) {
         ATLAS_LOG_WARN("equip request dropped: the DB runner is not accepting work");
     }
+}
+
+void GameServer::HandleRanking(const std::shared_ptr<atlas::Session>& session,
+                               const std::shared_ptr<SessionState>& state,
+                               const atlas::Frame& frame) {
+    std::span<const Byte> cursor(frame.payload);
+    UInt16 requested = 0;
+    if (!atlas::generated::ReadLe(cursor, requested)) {
+        ATLAS_LOG_WARN("session {} sent a truncated ranking request — closing",
+                       atlas::IdValue(session->Id()));
+        session->Close();
+        return;
+    }
+
+    // 🔴 THE ONLY REQUEST THIS GAME SERVES ENTIRELY FROM THE CACHE, AND IT SAYS SO WHEN IT CANNOT.
+    // The load path can fall back because the database holds the same facts; a ranking has no
+    // database form here (it is a projection nobody stores), so "Redis is down" has to reach the
+    // client as Unavailable rather than as an empty leaderboard.
+    ranking_.Top(
+        MakeCtx(session, state), options_.server_id, requested,
+        [session, state](bool ok, const std::vector<RankEntry>& entries) {
+            ++state->send_seq;
+            atlas::SendFrame(*session, kOpRankingResponse, state->send_seq,
+                             EncodeRankingResponse(
+                                 ok ? RankingResult::Ok : RankingResult::Unavailable, entries));
+        },
+        PosterFor(session));
 }
 
 }  // namespace atlas_demo

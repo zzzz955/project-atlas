@@ -12,6 +12,7 @@
 #include "atlas/core/types.h"
 #include "atlas/db/connection.h"
 #include "atlas/net/net_types.h"
+#include "atlas/redis/connection.h"
 #include "game/handlers.h"
 
 // The GAME server binary (architecture-design.md §5.1 · §15.3).
@@ -100,6 +101,19 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
                 "certificate is NOT verified. Local/compose only; never production.");
         }
 
+        // 🔴 architecture-design.md §10.2 — the cache is OPTIONAL and its absence is a warning,
+        // not a failure. An unset host means every load goes to the database, which is also what
+        // happens when Redis is reachable but a lookup fails: one degraded path, not two.
+        atlas::RedisConnectionConfig redis_config;
+        redis_config.host = secrets.redis_host;
+        redis_config.port = secrets.redis_port == 0 ? atlas::UInt16{6379} : secrets.redis_port;
+        redis_config.password = secrets.redis_password;
+        if (redis_config.host.empty()) {
+            ATLAS_LOG_WARN(
+                "ATLAS_REDIS_HOST is unset — the character read cache and the exp ranking are off "
+                "and every character load goes to the database. See server/.env.example.");
+        }
+
         atlas_demo::GameServer::Options options;
         options.endpoint = atlas::Endpoint(atlas::Tcp::v4(), config.listen_port);
         options.server_id = static_cast<atlas::UInt16>(config.server_id);
@@ -107,7 +121,7 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
         options.db_pool_size = kDbPoolSize;
         options.db_threads = kDbThreads;
 
-        atlas_demo::GameServer server(options, db_config);
+        atlas_demo::GameServer server(options, db_config, redis_config);
 
         // Installed after LogInit so these two override log.cpp's re-raising handler; the other
         // four (SIGABRT / SIGSEGV / SIGILL / SIGFPE) are crashes and keep the flush-and-die
