@@ -1647,6 +1647,98 @@ DB 축에 이어 두 번째로 실현된 사례다.
 아니라 18이 조용히 돌던 기간 내내 쌓인 것이다. 🔴 **설정 절반(216건 소멸)을 지금 먼저 넣는 이유는
 부채가 자라기 때문이다** — 파일이 늘면 209건이 비례해서 늘고, 마감 직전에 만나면 훨씬 커진다.
 
+#### 15.5i 잔여 부채 정리와 로컬 검증 루프 (2026-08-12, run 31531845296)
+
+§15.5h 가 예고한 대로 부채는 자랐다. 슬라이스 2 문서 커밋(`1fd8585`)의 런에서 `clang-tidy` 가
+**단독으로** 실패했고, 고유 **75건**(TU 중복 포함 96)이었다 — 미룰 때의 51건에서 증가했다.
+🔴 **종류는 §15.5h 의 예측대로 같았고 2종만 새로 나타났다**(`clang-analyzer-cplusplus.NewDeleteLeaks`
+· `bugprone-incorrect-roundings`). 즉 "코드가 늘면 건수는 늘되 종류는 같다"는 판단은 맞았다.
+
+🔴 **이 런이 드러낸 더 중요한 사실은 실패의 위치가 아니라 그 뒤다**: `clang-tidy` 가 붉자
+`build (unity ON)` · `build (unity OFF)` · `test` 가 전부 **skipped** 로 끝났다. **린터 하나가
+빨간 동안 CI 는 빌드 축과 테스트 축을 아예 채점하지 못한다.** §15.4 의 "아무것도 증명하지 못한
+초록은 빨강보다 나쁘다"의 쌍둥이 — 아무것도 증명하지 못한 **빨강**도 같은 값이다. 부채를 8일
+더 끌면 그 기간 내내 CI 는 린트 결과만 알려준다.
+
+| 고유 | 체크 | 조치 |
+|---:|---|---|
+| 28 | `bugprone-unchecked-optional-access` | 아래 ①② |
+| 16 | `bugprone-unused-return-value` | 아래 ③ |
+| 8 | `modernize-use-auto` | `const T x = static_cast<T>(…)` → `const auto`. 폭은 캐스트에 그대로 남으므로 CS §4.1 과 충돌하지 않는다 |
+| 6 | `modernize-use-designated-initializers` | `db/idempotency.cpp` 3 · `tx_atomicity_test` 3 |
+| 5 | `modernize-use-ranges` | `std::ranges::{find_if,sort,is_sorted}` |
+| 5 | `readability-identifier-naming` | 아래 ④ |
+| 2 | 🔴 `bugprone-implicit-widening-of-multiplication-result` | **만다트 위반.** `proto/frame.h:51`·`net/session.h:47` → `std::size_t{N} * M` |
+| 2 | `modernize-return-braced-init-list` | |
+| 1 | `bugprone-incorrect-roundings` | `static_cast<size_t>(x + 0.5)` → `std::lround` |
+| 1 | `performance-move-const-arg` | `Ctx` 는 trivially copyable → `std::move` 제거. 없어도 되는 문법이 아니라 **타입에 없는 소유권 이전으로 읽히는** 것이 문제다 |
+| 1 | `clang-analyzer-cplusplus.NewDeleteLeaks` | 아래 ⑤ |
+
+**① `ATLAS_ASSERT_HAS_VALUE` 신설** (`server/tests/optional_assert.h`). `ASSERT_TRUE(x.has_value())`
+는 런타임으로는 충분하지만 `bugprone-unchecked-optional-access` 가 **읽지 못한다** — gtest 는
+조건을 불투명한 `AssertionResult` 로 감싸므로 dataflow 가 그것을 `has_value()` 로 되돌리지 못하고,
+뒤따르는 모든 역참조가 "검사되지 않음"으로 신고된다. 🔴 **테스트에서 이 체크를 끄는 쪽이
+대안이었고 그것은 스위트를 눈멀게 한다.** `if (!cond) { FAIL(); }` 형태는 모델이 그대로 읽으므로
+런타임 동작을 바꾸지 않고 28건 중 21건이 소멸한다. `ATLAS_` 접두는 CS §5 정책이고
+`.clang-tidy` 의 `AllowedRegexp` 가 그것을 기계로 강제한다.
+
+**② `tx_atomicity_test::Lease()` 의 반환형을 `std::optional<PooledConnection>` → `PooledConnection`**
+으로 바꿔 7건을 **근본 제거**했다. 이 함수는 풀이 고갈되면 그 자리에서 throw 하므로 optional 을
+돌려줄 이유가 없었고, 그 결과 모든 호출부가 `**lease` 로 **이미 확정된 것을 다시 역참조**하고
+있었다. 🔴 억제한 것이 아니라 검사가 옳았던 쪽이다.
+
+**③ `std::ignore =`** — Boost 의 동기 op(`socket.shutdown/close`, `acceptor.cancel/close`)은 실패를
+**out-param 과 반환값 양쪽**으로 보고한다(`BOOST_ASIO_SYNC_OP_VOID`). `ErrorCode ignored` 를
+넘기는 것은 의도의 절반만 적은 것이고, 반환 사본은 조용히 버려져 **고의와 망각이 구분되지
+않는다.** `.clang-tidy` 에 `AllowCastToVoid` 를 켜는 대안은 택하지 않았다 — 설정을 느슨하게 하는
+대신 폐기를 호출부에 쓰는 쪽이 §15.5h 가 세운 "끄는 것과 정책을 표현하는 것은 다르다"에 맞는다.
+
+**④ 🔴 3건은 코드 결함이 아니라 설정 결함이었다.** `.clang-tidy` 에 `ConstexprVariable*` 이 없어
+**함수 지역 `constexpr` 이 `VariableCase: lower_case` 까지 떨어졌다** — CS §3 은 스코프와 무관하게
+`kPascalCase` 를 요구하므로, 설정이 위반이 아니라 **준수를 잡고 있었다.** 상세는 CS §7.1.
+남은 2건(`st_mysql`·`st_mysql_stmt`)은 libmariadb 의 C 태그라 개명이 곧 전방선언 파괴이므로
+`NOLINT` + 사유.
+
+**⑤ `redis/connection.cpp` 의 `NewDeleteLeaks` 는 오탐**으로 판정하고 `NOLINT` + 사유를 남겼다.
+`answered` 의 두 번째 참조가 strand 에 post 된 핸들러 안에 있고 분석기가 거기서 추적을 놓는다.
+🔴 **`shared_ptr` 은 편의가 아니라 필수다** — 프로브가 타임아웃하면 핸들러가 살아 있는 채로 함수가
+반환하므로, 스택 위의 promise 였다면 dangling write 다.
+
+##### 🔴 로컬에서 clang-tidy 를 돌릴 수는 있다 — 그러나 게이트로 승격하지 않는다
+
+wp9a 의 원래 제약은 "로컬 게이트가 이 단계를 건너뛰므로 결과를 보려면 매번 푸시해야 한다"였다.
+`build/windows-ci/compile_commands.json` 의 **사본에서 PCH 플래그만 제거**하고 VS 동봉
+`clang-tidy 19.1.5` 로 58 TU 를 돌리면 실제로 동작한다 — 파싱 에러 **0건**이고 CI 가 신고한 위치를
+그대로 재현한다(`net/session.h:47:56` · `net/acceptor.cpp:88,89`). 이번 75건은 이 루프로 정리했고
+푸시 왕복은 1회로 줄었다.
+
+🔴 **그럼에도 CS §7.3 의 결정(`--extra-arg=/Y-` 를 게이트에 넣지 않는다)은 유지된다.** 근거가
+이번에 **실증으로 하나 더 늘었기 때문이다**: MSVC STL 에서는 `bugprone-unchecked-optional-access`
+가 `operator*` 를 **아예 잡지 않는다.** 검사 없이 쓴 `(*v)` 도 통과한다 — 반면 CI(libstdc++)는
+잡았다(`game_cache_test.cpp:483` 이 그 증거). 즉 이 루프는 **강한 사전 필터이지 등가가 아니며**,
+게이트로 승격하면 "로컬 초록"이 다시 아무것도 증명하지 못하는 초록이 된다. 해소 조건은 §7.3 이
+정한 그대로 clang-cl 도입이다.
+
+##### 🔴 `clang-tidy` 잡 샤딩 임계값이 실측으로 넘었다
+
+§15.5d/e 가 정한 임계값은 "`clang-tidy` 단계 3분 초과(대략 TU 35개)" 또는 "총 게이트 6분 초과"
+였고, §15.5e 는 **추정으로 지르지 말고 실측을 읽으라**고 못박았다. 이번 런의 실측:
+
+| 단계 | 소요 |
+|---|---:|
+| `clang-tidy` | **393초 (6분 33초)** |
+| `configure` (캐시 명중) | 10초 |
+| 그 앞 5단계 합 | 12초 미만 |
+
+🔴 **임계값의 2.2배다.** 단계는 실패했지만 `xargs` 가 전 파일을 처리한 뒤 끝났으므로 393초는 전체
+린트 시간이 맞다. **판정 근거는 이제 존재한다** — 다만 §15.5e 실측(잡 분할 = 19% 단축 · 러너 비용
+2배)이 여전히 유효하므로, 샤딩은 이 정리와 별개 변경으로 다룬다. 🔴 **초록 런에서의 총 게이트
+시간은 아직 없다** — build/test 가 skipped 였기 때문이다.
+
+**검증 (2026-08-12)**: `ci-gate.ps1` **PASS 131/131 · skip 0**(DB 도달 상태에서 실행) · unity ON /
+OFF 양쪽 빌드 · `gen:check` · `core-purity` · `format-check` 통과. 로컬 clang-tidy 재스윕에서
+CI 채점 범위(`atlas`·`game`·`loadgen`·`console_client`·`tests`)의 잔여 **0건**.
+
 ---
 
 ## 16. 미결 사항

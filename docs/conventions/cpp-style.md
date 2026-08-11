@@ -249,8 +249,11 @@ CheckOptions:
   - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
   - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
   - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }
+  - { key: readability-identifier-naming.ConstexprVariableCase,   value: CamelCase }
+  - { key: readability-identifier-naming.ConstexprVariablePrefix, value: k }
   - { key: cppcoreguidelines-macro-usage.AllowedRegexp,         value: '^ATLAS_' }
 ```
+🔴 **`ConstexprVariable*` 2줄이 없으면 §3 의 `constexpr` = `kPascalCase` 규칙이 네임스페이스 스코프에서만 성립한다** (2026-08-12 실측, `architecture-design.md §15.5i`). `readability-identifier-naming` 은 식별자를 **옵션이 하나라도 설정된 가장 구체적인 수준**에서 판정하고 거기서 멈춘다. 네임스페이스 스코프 `constexpr` 은 `GlobalConstant`(위의 prefix)에서 멈춰 `kMaxPayload` 가 통과했지만, **함수 지역 `constexpr` 은 아무것도 설정되지 않아 `VariableCase: lower_case` 까지 떨어졌다** — 규칙이 지역에서만 뒤집혀 있었고, 그래서 `kSentinel` · `kPosterThreads` 가 에러였다. 🔴 **설정이 컨벤션과 어긋나면 위반을 잡는 게 아니라 준수를 잡는다.**
 🔴 **제외 2건은 결정이지 완화가 아니다** (2026-08-11, clang-tidy 19가 처음 실제로 채점한 런.
 `architecture-design.md §15.5h`):
 - `modernize-use-trailing-return-type` — 이 프로젝트는 **선행 반환형**을 쓴다(스타일 기반 Google). 이 체크는 의도적으로 고른 컨벤션을 209곳 뒤집으라고 요구하며, `modernize-*` 와일드카드에 딸려 들어왔을 뿐이다

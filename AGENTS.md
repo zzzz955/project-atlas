@@ -132,9 +132,16 @@ AST). Suppressing the PCH just to satisfy the linter would tidy a TU the compile
 the step moved to `linux-ci` instead. Undo when clang-cl lands locally. `AD §15.4` · `CS §7.3`.
 cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them via
 `Common7\Tools\VsDevCmd.bat -arch=amd64` (both `setup.bat` and `ci-gate.ps1` do this themselves).
-CI is **green** since run `31358038029` (2026-08-10) — all 7 gate steps pass on `ubuntu-24.04`.
+🔴 **CI is not currently proven green.** The last recorded run (`31531845296`, 2026-08-12) failed on
+`clang-tidy` alone, and a red lint step leaves `build`/`test` **skipped** — a red that proves as
+little as a hollow green. The 75 findings behind it are fixed (`AD §15.5i`); the next push is what
+decides. Do not restate "CI is green" without a run id.
 `ci-gate.ps1` is still the local gate and is **not** equivalent: it skips `clang-tidy` (MSVC PCH),
-so naming / `bugprone` / `modernize` violations only surface in CI. `AD §15.5c`.
+so naming / `bugprone` / `modernize` violations only surface in CI. `AD §15.5c`. A local
+clang-tidy sweep **is** possible off a PCH-stripped copy of `compile_commands.json` and is a useful
+pre-filter, but 🔴 it is deliberately not the gate: MSVC's STL never reports `operator*` for
+`bugprone-unchecked-optional-access` while CI's libstdc++ does, so a clean local sweep is not
+evidence. `AD §15.5i` · `CS §7.3`.
 🔴 **`format-check` runs in both and can still disagree** — the local `clang-format` ships with VS
 (19.1.5), CI's comes from `apt.llvm.org`; the 18.1.3 CI was really running measured `ColumnLimit` in
 bytes, so a comment holding `§` or `—` passed locally and failed in CI. A green local gate is never

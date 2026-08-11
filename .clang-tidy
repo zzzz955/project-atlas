@@ -33,6 +33,14 @@ CheckOptions:
   - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
   - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
   - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }
+  # 🔴 cpp-style.md §3 says `constexpr` is kPascalCase REGARDLESS of scope, and without this pair
+  # the rule only held at namespace scope. readability-identifier-naming resolves an identifier at
+  # the most specific level that has ANY option set: a namespace-scope `constexpr` stopped at
+  # GlobalConstant (prefix above, so `kMaxPayload` passed), but a function-local one found nothing
+  # set until it fell all the way through to VariableCase — and was told to be lower_case. The
+  # convention was inverted for locals, which is why `kSentinel` and `kPosterThreads` were errors.
+  - { key: readability-identifier-naming.ConstexprVariableCase,   value: CamelCase }
+  - { key: readability-identifier-naming.ConstexprVariablePrefix, value: k }
   # 🔴 Encodes cpp-style.md §5 instead of switching the check off: the ATLAS_ family (log · throw ·
   # check) is the sanctioned macro set, and everything outside it stays a violation.
   - { key: cppcoreguidelines-macro-usage.AllowedRegexp,         value: '^ATLAS_' }
