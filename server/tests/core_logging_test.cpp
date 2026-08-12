@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 
@@ -8,6 +10,7 @@
 #include "atlas/core/error.h"
 #include "atlas/core/ids.h"
 #include "atlas/core/log.h"
+#include "atlas/core/stack_trace.h"
 #include "atlas/core/types.h"
 
 namespace {
@@ -20,6 +23,8 @@ atlas::UInt64 LogProbe() {
     ++g_log_probe_calls;
     return g_log_probe_calls;
 }
+
+[[noreturn]] void ThrowForeignException() { throw std::runtime_error("foreign failure"); }
 
 // 🔴 This is THE test that justifies the macros existing at all (cpp-style.md §5). If a refactor
 // ever turns the log entry points into functions, this is what fails.
@@ -193,11 +198,31 @@ TEST(CoreError, ThrowAndCheckCarrySourceLocationAndTrace) {
         EXPECT_EQ(ex.TraceId(), atlas::UInt64{1234});
         EXPECT_NE(std::string_view{ex.what()}.find("mismatch 1 vs 2"), std::string_view::npos);
         EXPECT_NE(std::string_view{ex.Where().file_name()}, std::string_view{});
+        ASSERT_FALSE(ex.StackTrace().empty());
+        EXPECT_NE(ex.StackTrace().find("0x"), std::string_view::npos) << ex.StackTrace();
+#if defined(_WIN32)
+        EXPECT_NE(ex.StackTrace().find("core_logging_test.cpp"), std::string_view::npos)
+            << ex.StackTrace();
+#endif
     }
 
     // A passing condition must not throw, and ATLAS_ASSERT must compile in both configurations.
     EXPECT_NO_THROW(ATLAS_CHECK(expected < actual, "never"));
     EXPECT_NO_THROW(ATLAS_ASSERT(expected < actual));
+}
+
+TEST(CoreError, ForeignExceptionKeepsItsThrowSiteStack) {
+    try {
+        ThrowForeignException();
+    } catch (const std::runtime_error&) {
+        const std::string trace = atlas::CaptureCurrentExceptionStackTrace();
+        ASSERT_FALSE(trace.empty());
+        EXPECT_NE(trace.find("0x"), std::string::npos) << trace;
+#if defined(_WIN32)
+        EXPECT_NE(trace.find("core_logging_test.cpp"), std::string::npos) << trace;
+        EXPECT_NE(trace.find("ThrowForeignException"), std::string::npos) << trace;
+#endif
+    }
 }
 
 }  // namespace

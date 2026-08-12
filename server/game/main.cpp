@@ -26,12 +26,9 @@
 
 namespace {
 
-// 🔴 The only thing a signal handler here does is store a flag. `LogInit` installs its own handler
-// for SIGINT/SIGTERM that flushes and then re-raises with the default disposition, which kills the
-// process — correct for a crash, wrong for `docker stop`, which must reach the ordered shutdown in
-// §9. Installing this AFTER LogInit deliberately takes those two signals back. The flush is not
-// lost: it happens on the main thread in LogShutdown() below, and doing it there rather than inside
-// the handler is also what keeps this function async-signal-safe, which log.cpp's version is not.
+// 🔴 The only thing a graceful-stop signal handler does is store a flag. Crash diagnostics own only
+// fatal signals; SIGINT/SIGTERM must reach the ordered shutdown in §9, where LogShutdown flushes on
+// the main thread. Doing no logger work here is what keeps this handler async-signal-safe.
 std::atomic<bool> g_stop_requested{false};  // NOLINT — a signal flag has to be at namespace scope.
 
 extern "C" void OnStopSignal(int /*signal_number*/) { g_stop_requested.store(true); }
@@ -123,9 +120,8 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
 
         atlas_demo::GameServer server(options, db_config, redis_config);
 
-        // Installed after LogInit so these two override log.cpp's re-raising handler; the other
-        // four (SIGABRT / SIGSEGV / SIGILL / SIGFPE) are crashes and keep the flush-and-die
-        // behaviour.
+        // Graceful stop is separate from crash.cpp's fatal-signal path: it drains instead of
+        // producing a dump.
         std::signal(SIGINT, &OnStopSignal);
         std::signal(SIGTERM, &OnStopSignal);
 

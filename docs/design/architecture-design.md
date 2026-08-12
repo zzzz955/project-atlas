@@ -889,12 +889,78 @@ ATLAS_LOG_TRACE / DEBUG / INFO / WARN / ERROR / FATAL
   (`daily_file_sink` = 일자+보존, `rotating_file_sink` = 크기+개수), 둘을 합치려면 보존 로직까지
   직접 재구현해야 한다. 필요해지면 `base_sink` 파생 싱크 하나로 추가한다 — 포맷터/큐를 건드리는
   일이 아니므로 §11.3의 "자체 구현 금지"에 걸리지 않는다.
-- **크래시 flush 훅 = `std::signal` + `std::set_terminate`.** `SIGABRT · SIGSEGV · SIGILL · SIGFPE ·
-  SIGINT · SIGTERM` 핸들러에서 flush → 기본 동작 복원 → 재발생(`std::raise`)시키므로 크래시 덤프와
-  종료 코드는 그대로 남는다. `std::set_terminate`는 이전 핸들러를 체이닝한다. `SIGKILL`은 정의상
-  잡을 수 없어 큐 꼬리를 잃는다 — 감수한다.
+- **크래시 진단 = SS(Symbolized Stack) + 플랫폼 dump (2026-08-12 확정).** 아래 §11.1a가
+  `파일:라인`까지 복원하는 전체 계약이다. 기존 `std::signal` 핸들러에서 spdlog를 직접 flush하던
+  코드는 제거한다 — async logger/allocator/파일 싱크 호출은 async-signal-safe가 아니어서, 이미
+  손상된 프로세스를 교착시킬 수 있다. 정상 종료와 `std::terminate`에서는 flush하고, 하드웨어
+  fault에서는 dump의 생존을 로그 큐 꼬리보다 우선한다.
 - **`LogCount(level)`** — 레벨별 누적 레코드 수. `Guarded`가 예외를 삼킬 때 "ERROR 로그가 정확히 1건"
   임을 테스트가 **관측**할 수 있게 하는 장치이고, 동시에 에러율 알람용 카운터다.
+
+#### 11.1a SS — 예외·크래시를 소스 파일 N번째 줄로 닫는다 (2026-08-12 확정)
+
+이 문서에서 **SS는 Symbolized Stack**을 뜻한다. Windows Symbol Server 제품 자체를 뜻하는 약어가
+아니라, `실행 파일 + dump + 동일 build-id의 PDB/DWARF → 함수 · 파일 · 라인`으로 복원하는 Atlas의
+진단 계약이다. 주소만 있는 콜스택이나 throw 매크로 한 줄만 있는 로그는 완료가 아니다.
+
+**복구 가능한 런타임 예외:**
+
+- `ATLAS_THROW`가 만드는 `atlas::Exception`은 기존 `std::source_location`의 최초 throw
+  `파일:라인:함수`에 더해 **throw 시점의 전체 스택**을 최대 64 frame 보존한다
+- `Guarded`는 예외를 잡으면 ERROR 한 건에 ctx 원장과 `throw stack`을 함께 기록한다. 이미 unwind된
+  catch 지점의 스택을 새로 찍지 않는다
+- 외부 라이브러리의 `std::exception`도 `Boost.Stacktrace from_exception` 백엔드로 throw 시점 스택을
+  복원한다. frame마다 원시 주소를 반드시 남기고, 런타임에서 PDB/DWARF를 찾을 수 있을 때 즉시
+  `파일:라인`으로 심볼화한다. stripped 운영 바이너리는 주소+함수까지만 보일 수 있으며 동일
+  build-id의 심볼로 사후 복원한다. 캡처 자체가 실패해도 원래 예외를 가리지 않고
+  `[stack unavailable]`을 남긴다
+- 캡처와 심볼화는 예외 경로에만 있다. 정상 packet hot path 비용은 0이다
+
+**복구 불가능한 프로세스 크래시:**
+
+| 플랫폼 | 런타임 동작 | 정확한 라인 복원에 필요한 산출물 |
+|---|---|---|
+| Windows | top-level SEH filter가 fault context를 전용 dump thread에 넘기고 `MiniDumpWriteDump`로 `.dmp` 생성. DbgHelp 호출은 그 thread 하나로 직렬화 | `.dmp` + 동일 build-id의 executable + `/DEBUG:FULL` PDB |
+| Linux | `sigaction` handler는 async-signal-safe 연산으로 기본 disposition을 복원하고 신호를 재발생. 커널 core dump가 fault thread/context를 보존 | core + 동일 build-id의 stripped executable + 분리 DWARF (`atlas_game.debug`) |
+
+Windows도 손상된 프로세스 내부 dump thread라는 한계가 있다. Microsoft 권장은 별도 프로세스지만,
+그 helper와 IPC를 상주시킬 규모는 Phase 1을 넘는다. stack overflow로 dump thread가 같이 망가지지
+않게 별도 stack을 가진 thread를 기동 시 미리 만들고, dump 대기는 10초로 제한한다. 실패해도 OS의
+후속 crash 처리와 종료를 막지 않는다.
+
+Linux signal handler에서는 **로그 포맷팅·심볼화·동적 할당·spdlog flush를 금지**한다. core 생성
+위치는 애플리케이션이 아니라 host의 `RLIMIT_CORE`·`kernel.core_pattern`·systemd-coredump 정책이다.
+프로세스는 soft limit를 hard limit까지 올리되, hard limit 0이나 읽기 전용 파일시스템이면 core가
+없을 수 있다. 배포 전 `ulimit -c`와 실제 probe로 검증한다. `SIGKILL`·전원 손실은 정의상 잡지 못한다.
+
+**심볼 보존·보안:**
+
+- 기동 로그와 Windows dump 이름에 `ATLAS_BUILD_ID`를 남긴다. Docker는 image revision을 넣고,
+  로컬 빌드는 명시적인 `dev`다. build-id가 다른 심볼로 분석한 결과는 증거로 취급하지 않는다
+- Windows PDB는 로컬 build tree에서 executable 옆에, Linux DWARF는 Docker `symbols` stage에
+  `VERSION`과 함께 산출한다. 배포 패키징 때 둘 다 분리하며 **runtime image에는 PDB/DWARF를 넣지
+  않는다**
+- core/minidump에는 request payload·키·개인정보가 포함될 수 있다. public artifact와 일반 로그에
+  올리지 않고 접근 제한된 incident storage에서 로그보다 짧게 보존한다
+- `server/scripts/symbolize-crash.ps1`가 Windows `cdb`와 Linux `gdb` 호출을 한 인터페이스로 묶는다
+
+**검증:** `atlas_crash_probe`는 자식 프로세스로 실행해 의도적으로 죽인다. ctest에는 등록하지
+않는다 — Linux core 생성은 host 정책이므로 일반 테스트의 초록과 섞으면 거짓 실패가 된다.
+
+```powershell
+# Windows: .dmp가 생성되고 출력에 crash_probe.cpp @ N이 있어야 한다
+cmake --build --preset windows-ci --target atlas_crash_probe
+build/windows-ci/tests/atlas_crash_probe.exe build/crash-probe
+scripts/symbolize-crash.ps1 -Dump <dmp> -Binary build/windows-ci/tests/atlas_crash_probe.exe `
+  -Symbols build/windows-ci/tests
+```
+
+```bash
+# Linux: host가 core를 허용한 환경에서 파일:라인이 복원돼야 한다
+ulimit -c unlimited
+./build/linux-ci/tests/atlas_crash_probe build/crash-probe
+pwsh scripts/symbolize-crash.ps1 -Dump <core> -Binary <exact-binary> -Symbols <exact-debug-file>
+```
 
 ### 11.2 예외 정책
 
@@ -1096,12 +1162,19 @@ dev(Windows)와 prod(Linux)가 서로 다른 소켓 구현을 쓰게 되는 조�
 
 ### 15.2 의존성 — vcpkg manifest 모드
 
-의존성은 7개다: **Boost(asio/beast/redis) · OpenSSL · MySQL client** (+ spdlog, gtest).
+의존성은 8개다: **Boost(asio/beast/redis/stacktrace) · OpenSSL · MySQL client** (+ spdlog, gtest).
 
 ```json
-{ "dependencies": ["boost-asio","boost-beast","boost-redis","openssl","libmariadb","spdlog","gtest"],
+{ "dependencies": ["boost-asio","boost-beast","boost-redis","boost-stacktrace","openssl","libmariadb","spdlog","gtest"],
   "builtin-baseline": "eaca4a577b6b678c6e10252754b6988a61746c19" }
 ```
+
+🔴 **콜스택 = `boost-stacktrace` (2026-08-12 추가, SS §11.1a).** 이미 고정된 Boost 1.91과 같은
+toolchain/ABI로 Windows `windbg`, Linux `backtrace`, 공통 `from_exception` 백엔드를 제공한다.
+별도 crash SDK를 하나 더 들이지 않는다. 헤더는 `atlas/core/stack_trace.cpp` 뒤에 숨겨 정상 TU의
+빌드 비용을 늘리지 않고, 예외와 crash 경로에만 비용을 지불한다. Linux `backtrace` feature의
+`libbacktrace` 포트는 autotools를 사용하므로 Docker와 CI builder에 `autoconf · autoconf-archive ·
+automake · libtool`이 필요하다. 한쪽만 추가하면 §15.5a와 같은 빌드 레시피 분기가 재발한다.
 
 🔴 **Redis 클라이언트 = `boost-redis` (2026-08-11 추가, 캐시 축 착지).** §10.2 가 "자리만 새긴다"로
 미뤄 뒀던 C++ 클라이언트가 여기서 실재가 된다. 선택 근거는 **스레드 모델 정합** 하나다.
@@ -1229,6 +1302,12 @@ RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
 
 **갱신 (2026-08-10)**: `game` role 은 이제 실재한다(`/app/atlas_game`). `fe` / `world` 는 그대로
 exit 69 로 "이 이미지에 아직 없다"를 말한다 — 있는 척 감싸지 않는 원칙은 유지된다.
+
+🔴 **SS 심볼은 runtime image와 분리한다 (2026-08-12).** Linux release는 `-g`로 링크한 뒤
+`objcopy --only-keep-debug`로 `atlas_game.debug`를 떼고 실행 파일은 strip한다. 기본 runtime stage는
+stripped binary만 받고, Docker `symbols` stage가 DWARF와 `VERSION`을 build-id별 incident storage로
+내보낸다. image revision과 다른 stage의 심볼을 섞으면 파일:라인이 그럴듯하게 틀릴 수 있으므로
+그 결과는 폐기한다. core 자체도 메모리의 시크릿을 담을 수 있어 image registry에 넣지 않는다.
 
 🔴 **부하 하네스는 빌더 스테이지에서만 빌드되고 런타임 스테이지로 복사되지 않는다 (2026-08-10,
 §16.1).** 빌더가 `COPY loadgen` 을 하는 이유는 루트 `CMakeLists.txt` 가 그 디렉터리를 잡기

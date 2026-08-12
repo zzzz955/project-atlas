@@ -132,7 +132,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/llvm-19.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build clang-format-19 clang-tidy-19 \
-            pkg-config curl zip unzip tar
+            pkg-config curl zip unzip tar autoconf autoconf-archive automake libtool
           # 🔴 Printed on purpose: the next version-skew failure has to be readable from the log.
           # These are the exact binaries the format-check and clang-tidy steps invoke.
           clang-format-19 --version

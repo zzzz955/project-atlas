@@ -21,6 +21,7 @@ FROM ubuntu:24.04 AS builder
 # 빌더 레이어를 키우고, 왜 있는지 아무도 모르는 줄이 된다.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git curl zip unzip tar pkg-config ca-certificates \
+        autoconf autoconf-archive automake libtool \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -49,8 +50,15 @@ COPY tests ./tests
 
 # 🔴 §15.2: a container has a fresh filesystem every time, so vcpkg's default local binary cache
 # buys nothing. Mount it explicitly or every build recompiles Boost from source.
+ARG ATLAS_GIT_SHA=unknown
 RUN --mount=type=cache,target=/root/.cache/vcpkg/archives \
-    cmake --preset linux-release && cmake --build --preset linux-release
+    cmake --preset linux-release -DATLAS_BUILD_ID="${ATLAS_GIT_SHA}" \
+    && cmake --build --preset linux-release \
+    && objcopy --only-keep-debug build/linux-release/game/atlas_game \
+        build/linux-release/game/atlas_game.debug \
+    && objcopy --strip-debug build/linux-release/game/atlas_game \
+    && objcopy --add-gnu-debuglink=build/linux-release/game/atlas_game.debug \
+        build/linux-release/game/atlas_game
 
 # 런타임 설정(§5.4). 빌드 뒤에 복사해서 ini 한 줄 고쳤다고 컴파일 캐시가 날아가지 않게 한다.
 # 🔴 시크릿은 여기 없다 — .env 는 .dockerignore 로 막혀 있고 compose 가 런타임에 주입한다.
@@ -73,6 +81,9 @@ WORKDIR /app
 # 🔴 GAME 만 들어온다. FE / WORLD 실행 파일은 아직 없고, 없는 것을 있는 척 감싸지 않는다(§15.3) —
 # entrypoint 는 그 두 role 에 대해 계속 exit 69 로 죽는다.
 COPY --from=builder /src/build/linux-release/game/atlas_game /app/atlas_game
+# 🔴 DWARF is kept outside the runtime image. Core dumps can contain request data and the debug
+# file exposes source paths; both are incident artifacts, not public image contents. Export this
+# stage by exact image revision when symbolizing: `docker build --target symbols --output ...`.
 COPY --from=builder /src/server.ini /app/server.ini
 
 RUN printf 'revision=%s\nbuilt=%s\n' "$ATLAS_GIT_SHA" "$ATLAS_BUILD_TIME" > /app/VERSION
@@ -87,3 +98,9 @@ LABEL org.opencontainers.image.title="project-atlas" \
 COPY --chmod=755 scripts/entrypoint.sh /app/entrypoint.sh
 
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+# ---------------------------------------------------------------------------- symbols
+FROM scratch AS symbols
+
+COPY --from=builder /src/build/linux-release/game/atlas_game.debug /atlas_game.debug
+COPY --from=runtime /app/VERSION /VERSION

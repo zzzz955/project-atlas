@@ -35,11 +35,20 @@ public:
     // The trace id of the ctx ledger that was installed when the exception was constructed, so a
     // caught exception can still be correlated with the request that produced it.
     [[nodiscard]] UInt64 TraceId() const noexcept { return trace_id_; }
+    [[nodiscard]] std::string_view StackTrace() const noexcept { return stack_trace_; }
 
 private:
     std::source_location where_;
     UInt64 trace_id_;
+    std::string stack_trace_;
 };
+
+namespace detail {
+
+void ReportGuardedException(const std::exception& failure) noexcept;
+void ReportGuardedUnknownException() noexcept;
+
+}  // namespace detail
 
 // Injected by the handler owner: "the guard swallowed a throw, take this connection down safely".
 // A std::function rather than another template parameter — cpp-style.md §6 prefers type erasure
@@ -73,20 +82,30 @@ public:
         try {
             handler_(std::forward<Args>(args)...);
         } catch (const std::exception& ex) {
-            Fail(ex.what());
+            Fail(ex);
         } catch (...) {
-            Fail("non-std exception");
+            FailUnknown();
         }
     }
 
 private:
-    void Fail(std::string_view reason) noexcept {
+    void Fail(const std::exception& failure) noexcept {
         // The guard is the last line of defence, so even the reporting path has to be total: an
         // allocation failure inside the ERROR log must not turn into a terminate().
         try {
-            ATLAS_LOG_ERROR("guarded handler threw: {}", reason);
+            detail::ReportGuardedException(failure);
             if (on_failure_) {
-                on_failure_(reason);
+                on_failure_(failure.what());
+            }
+        } catch (...) {  // NOLINT — nowhere left to report to.
+        }
+    }
+
+    void FailUnknown() noexcept {
+        try {
+            detail::ReportGuardedUnknownException();
+            if (on_failure_) {
+                on_failure_("non-std exception");
             }
         } catch (...) {  // NOLINT — nowhere left to report to.
         }

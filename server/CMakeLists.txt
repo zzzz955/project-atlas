@@ -5,6 +5,11 @@ cmake_minimum_required(VERSION 3.25)
 # sets it. Do not set it here and do not hardcode a vcpkg path.
 project(project-atlas CXX)
 
+# Included in every crash log and Windows dump filename so an incident cannot be symbolized with a
+# merely similar binary. Docker passes the image revision; local builds default to an explicit dev
+# marker rather than inventing a commit identity.
+set(ATLAS_BUILD_ID "dev" CACHE STRING "Build identifier recorded in crash diagnostics")
+
 # clang-tidy consumes compile_commands.json, and only the Ninja generator emits it — this is why
 # every preset uses Ninja rather than the Visual Studio generator (cpp-style.md §7.3).
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

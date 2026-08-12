@@ -6,13 +6,12 @@
 #include <spdlog/spdlog.h>
 
 #include <array>
-#include <csignal>
 #include <cstddef>
-#include <exception>
 #include <filesystem>
 #include <memory>
 #include <vector>
 
+#include "atlas/core/crash.h"
 #include "atlas/core/ctx.h"
 #include "atlas/core/ids.h"
 
@@ -33,9 +32,6 @@ std::array<std::atomic<UInt64>, kLogLevelCount> g_log_counts{};
 std::shared_ptr<spdlog::logger> g_logger_owner;
 std::atomic<spdlog::logger*> g_logger{nullptr};
 
-std::atomic<bool> g_crash_hooks_installed{false};
-std::terminate_handler g_previous_terminate = nullptr;
-
 spdlog::level::level_enum ToSpdLevel(LogLevel level) noexcept {
     switch (level) {
         case LogLevel::Trace:
@@ -54,37 +50,6 @@ spdlog::level::level_enum ToSpdLevel(LogLevel level) noexcept {
             return spdlog::level::off;
     }
     return spdlog::level::info;
-}
-
-// 🔴 architecture-design.md §11.1 — without this the log lines written in the seconds before a
-// crash are still sitting in the async queue when the process dies, which is precisely the window
-// an incident post-mortem needs. The handler flushes, restores the default disposition and
-// re-raises, so the crash still produces its normal dump / exit code.
-void FlushOnSignal(int signal_number) {
-    LogFlush();
-    std::signal(signal_number, SIG_DFL);
-    std::raise(signal_number);
-}
-
-[[noreturn]] void FlushOnTerminate() {
-    LogFlush();
-    if (g_previous_terminate != nullptr && g_previous_terminate != &FlushOnTerminate) {
-        g_previous_terminate();
-    }
-    std::abort();
-}
-
-void InstallCrashFlushHooks() {
-    bool expected = false;
-    if (!g_crash_hooks_installed.compare_exchange_strong(expected, true)) {
-        return;
-    }
-    // SIGKILL / SIGSTOP cannot be caught by definition, so an operator `kill -9` still loses the
-    // tail of the queue. Everything the process can observe is covered.
-    for (const int signal_number : {SIGABRT, SIGSEGV, SIGILL, SIGFPE, SIGINT, SIGTERM}) {
-        std::signal(signal_number, &FlushOnSignal);
-    }
-    g_previous_terminate = std::set_terminate(&FlushOnTerminate);
 }
 
 }  // namespace
@@ -121,10 +86,16 @@ void LogInit(const LogConfig& config) {
     g_logger.store(logger.get(), std::memory_order_release);
 
     SetLogLevel(config.level);
-    InstallCrashFlushHooks();
+    if (!config.directory.empty()) {
+        CrashDiagnosticsConfig crash_config;
+        crash_config.directory = (std::filesystem::path(config.directory) / "crash").string();
+        crash_config.basename = config.basename;
+        CrashDiagnosticsInit(crash_config);
+    }
 }
 
 void LogShutdown() noexcept {
+    CrashDiagnosticsShutdown();
     g_logger.store(nullptr, std::memory_order_release);
     if (g_logger_owner) {
         try {

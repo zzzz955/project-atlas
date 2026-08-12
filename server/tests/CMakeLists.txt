@@ -3,6 +3,11 @@ find_package(GTest CONFIG REQUIRED)
 add_executable(atlas_core_tests core_logging_test.cpp core_types_test.cpp)
 target_link_libraries(atlas_core_tests PRIVATE atlas_core GTest::gtest GTest::gtest_main)
 
+# Manual process-level probe for §11.1. This binary intentionally crashes and is therefore built
+# by both unity modes but never registered with ctest; the host decides where Linux cores live.
+add_executable(atlas_crash_probe crash_probe.cpp)
+target_link_libraries(atlas_crash_probe PRIVATE atlas_core)
+
 # A separate executable, not another source on atlas_core_tests: LogCount and the log level are
 # process-wide, and the net tests assert on the ERROR count that Guarded produces. Sharing a process
 # with the tests that deliberately move the level around would make that assertion order-dependent.
