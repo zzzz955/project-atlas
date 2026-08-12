@@ -132,9 +132,10 @@ AST). Suppressing the PCH just to satisfy the linter would tidy a TU the compile
 the step moved to `linux-ci` instead. Undo when clang-cl lands locally. `AD §15.4` · `CS §7.3`.
 cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them via
 `Common7\Tools\VsDevCmd.bat -arch=amd64` (both `setup.bat` and `ci-gate.ps1` do this themselves).
-CI is green as of run `31537924701` (2026-08-12, `6be480d`) — the **first** green with `clang-tidy`
-19 actually grading, since the run §15.5c called first-green was 18 failing to parse `.clang-tidy`
-(`AD §15.5g`). Do not restate "CI is green" without a run id; it has been wrong twice.
+CI is green as of run `31542341373` (2026-08-12, `4dc29fd`, 7m00s). The first green with
+`clang-tidy` 19 actually grading was run `31537924701` (`6be480d`) — the run §15.5c called
+first-green was 18 failing to parse `.clang-tidy` (`AD §15.5g`). Do not restate "CI is green"
+without a run id; it has been wrong twice.
 🔴 **That green skips 25 of 131 tests and `ctest` still prints `100% tests passed`** — every
 DB/Redis suite, because CI has no MySQL service. The DB axis is proven only by a local `ci-gate.ps1`
 run against a reachable database (skip promoted to failure). **Quote both or neither.** `AD §15.5i`.
