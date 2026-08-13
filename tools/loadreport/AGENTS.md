@@ -24,6 +24,14 @@ npm run loadreport -- --in reports/run.jsonl --out reports/run.html \
                       --title "64커넥션 폐루프" --note "호스트 = i5-12600KF / 32GB"
 ```
 
+🔴 **Windows PowerShell 에서는 `npm run` 을 거치지 말고 스크립트를 직접 부른다 (2026-08-14 실측).**
+`npm.ps1` 이 `--` 구분자를 삼켜서 `--in` 이 사라지고 스크립트는 벌거벗은 경로 하나만 받는다 —
+`[loadreport] ERROR: 알 수 없는 옵션 'reports\run.jsonl'` 로 죽는다. 인자를 따옴표로 감싸도 같다.
+
+```powershell
+node tools\loadreport\loadreport.js --in reports\run.jsonl
+```
+
 | 옵션 | 뜻 |
 |---|---|
 | `--in <path>` | 필수. `--sample-jsonl` 이 남긴 JSONL |
