@@ -35,8 +35,25 @@ struct LiveSample {
     atlas::Float64 requests_per_second{0.0};
     atlas::Float64 p50_ms{0.0};
     atlas::Float64 p99_ms{0.0};
+    // The same two over the ACCEPTED answers only. 🔴 These are the ones that describe the server
+    // doing work; the pair above describes the stream a client saw, rejections included.
+    atlas::Float64 ok_p50_ms{0.0};
+    atlas::Float64 ok_p99_ms{0.0};
     std::size_t inflight{0};
     atlas::UInt64 errors{0};
+    // Completed equip round trips in this window, and how many of them the server declined
+    // (§10.8). 🔴 The pair is the point: a rejection count with no denominator cannot be read as a
+    // rate, and the rate is what says whether the server is shedding or dying.
+    atlas::UInt64 responses{0};
+    atlas::UInt64 rejections{0};
+    // Cumulative, because these happen once per connection rather than once per request — a
+    // per-window count of them would be zero in almost every window and would read as "no
+    // rejections" next to the pair above.
+    atlas::UInt64 load_rejections{0};
+    // Which ramp stage this window fell in, and the stage's connection count. Both 0 / the run's
+    // connection count in a fixed-concurrency run.
+    std::size_t stage{0};
+    std::size_t stage_connections{0};
     // 🔴 Negative means "no probe was supplied", which is a different statement from 0 ms and is
     // written to the JSONL as null. See LiveViewOptions::probe_file_path for why the harness does
     // not measure this itself.
@@ -50,28 +67,53 @@ class LiveMetrics {
 public:
     LiveMetrics();
 
-    // Called from a connection strand, once per completed round trip.
-    void RecordLatency(atlas::UInt32 micros) noexcept;
+    // Called from a connection strand, once per completed round trip. 🔴 `accepted` splits the
+    // histogram in two because a rejection answers in microseconds without running anything: once
+    // most answers are rejections the mixed p50 COLLAPSES, and a curve that fell from 1000 ms to
+    // 2 ms at the moment the server started shedding reads as "overload made it faster".
+    void RecordLatency(atlas::UInt32 micros, bool accepted) noexcept;
     // A connect / transport / load failure, or a response the server refused. Cumulative.
     void RecordError() noexcept;
+    // 🔴 NOT an error. The server declined the work under load and kept the connection (§10.8);
+    // it is a separate line on the chart because "the server refused" and "the server broke" are
+    // opposite readings of the same second and one series cannot say both.
+    void RecordRejection() noexcept;
+    // A character load the server declined. Cumulative — see LiveSample::load_rejections.
+    void RecordLoadRejection() noexcept;
 
     // Drains the histogram into `sample` and stamps the cumulative error count. 🔴 Sampler thread
     // only — it holds the non-atomic scratch buffer the percentile walk needs.
     void Drain(atlas::Float64 window_seconds, LiveSample& sample) noexcept;
 
 private:
-    [[nodiscard]] atlas::Float64 PercentileMs(atlas::UInt64 total,
-                                              atlas::Float64 fraction) const noexcept;
-
     // 100 µs buckets up to 4096 ms, plus one overflow bucket. Coarse on purpose: it exists to draw
     // a curve, and a finer grid would cost more to drain every second than the picture is worth.
     static constexpr atlas::UInt32 kBucketMicros = 100;
     static constexpr std::size_t kRangeBuckets = 40960;
     static constexpr std::size_t kBucketCount = kRangeBuckets + 1;
 
-    std::array<std::atomic<atlas::UInt32>, kBucketCount> buckets_;
+    using Histogram = std::array<std::atomic<atlas::UInt32>, kBucketCount>;
+
+    // Walks `scratch_`, which DrainInto fills from one histogram at a time.
+    [[nodiscard]] atlas::Float64 PercentileMs(atlas::UInt64 total,
+                                              atlas::Float64 fraction) const noexcept;
+    // Drains one histogram into `scratch_` and returns how many samples it held.
+    atlas::UInt64 DrainInto(Histogram& buckets) noexcept;
+
+    Histogram buckets_;
+    Histogram ok_buckets_;
     std::array<atlas::UInt32, kBucketCount> scratch_{};
     std::atomic<atlas::UInt64> errors_{0};
+    // Drained per window, like the histogram, so the ratio it forms with that window's response
+    // count is a rate rather than a running total.
+    std::atomic<atlas::UInt64> rejections_{0};
+    std::atomic<atlas::UInt64> load_rejections_{0};
+};
+
+// A ramp stage as the sampler sees it: when it opens, and how many connections it holds.
+struct StageMark {
+    atlas::Float64 begins_at_seconds{0.0};
+    std::size_t connections{0};
 };
 
 struct LiveViewOptions {
@@ -90,6 +132,8 @@ struct LiveViewOptions {
     // that knows the run's options; the conditions a run cannot know about itself (host, container,
     // MySQL settings) stay in §16.1b and are passed to the report tool as notes.
     std::string meta_json;
+    // The ramp schedule, ascending by start time. One entry in a fixed-concurrency run.
+    std::vector<StageMark> stages;
 };
 
 // The sampler. Owns one thread, wakes once a second, drains LiveMetrics, and writes whatever the

@@ -37,7 +37,18 @@
 //
 //     atlas_loadgen --connections 64 --duration 20 --warmup 3 --io-threads 8
 //
-// Two optional flags add the visualisation axis of §16.1a and nothing else:
+// Two optional flags add the ramp-up mode of §16.1i, which is what shows the server CROSSING its
+// capacity rather than sitting under it:
+//
+//     --ramp 8,16,32,64,128    stage connection counts, strictly increasing
+//     --stage-seconds <n>      how long each stage runs; --warmup is then the PER-STAGE prefix
+//     --no-delay 0|1           TCP_NODELAY on THIS PROCESS's sockets; absent = untouched
+//
+// 🔴 With --ramp absent the harness is the fixed-concurrency mode every §16.1 table was measured
+// with, unchanged. Ramp-up is an added mode: changing the default would delete the path back to
+// those numbers.
+//
+// Three optional flags add the visualisation axis of §16.1a and nothing else:
 //
 //     --tui                    an ANSI screen refreshed once a second, off a thread of its own
 //     --sample-jsonl <path>    one JSON record per second, the input of tools/loadreport
@@ -95,6 +106,22 @@ UInt64 ParseUnsigned(std::string_view text) {
     const std::from_chars_result parsed = std::from_chars(first, last, value);
     ATLAS_CHECK(parsed.ec == std::errc{} && parsed.ptr == last, "'{}' is not a whole number", text);
     return value;
+}
+
+// `--ramp 8,16,32,64` — the stage list of §16.1i.
+std::vector<std::size_t> ParseStageList(std::string_view text) {
+    std::vector<std::size_t> stages;
+    std::size_t begin = 0;
+    while (true) {
+        const std::size_t comma = text.find(',', begin);
+        const std::size_t end = comma == std::string_view::npos ? text.size() : comma;
+        stages.push_back(static_cast<std::size_t>(ParseUnsigned(text.substr(begin, end - begin))));
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        begin = comma + 1;
+    }
+    return stages;
 }
 
 // DATETIME in this schema has no fractional part.
@@ -238,20 +265,70 @@ void Report(const atlas_loadgen::LoadOptions& options, const atlas_loadgen::Load
         samples.empty() ? 0.0
                         : static_cast<Float64>(total_us) / static_cast<Float64>(samples.size());
 
-    std::printf("connections=%zu rate=%u duration_s=%u warmup_s=%u io_threads=%zu\n",
+    std::printf("connections=%zu rate=%u duration_s=%u warmup_s=%u io_threads=%zu no_delay=%s\n",
                 options.connections, options.rate_per_second, options.duration_seconds,
-                options.warmup_seconds, options.io_threads);
+                options.warmup_seconds, options.io_threads,
+                options.no_delay.has_value() ? (*options.no_delay ? "1" : "0") : "unset");
+    if (stats.no_delay_failures > 0) {
+        // 🔴 Loud: the cell's label says one thing and its sockets did another.
+        std::printf(
+            "TCP_NODELAY REQUEST FAILED on %zu connections — this cell is not what it says\n",
+            stats.no_delay_failures);
+    }
     std::printf("established=%zu peak_live=%zu connect_fail=%zu transport_fail=%zu load_fail=%zu\n",
                 stats.connections_established, stats.peak_live_connections, stats.connect_failures,
                 stats.transport_failures, stats.load_failures);
-    std::printf("requests_sent=%zu ok=%zu unavailable=%zu refused=%zu\n", stats.requests_sent,
-                stats.responses_ok, stats.responses_unavailable, stats.responses_refused);
+    std::printf("requests_sent=%zu ok=%zu unavailable=%zu refused=%zu load_rejected=%zu\n",
+                stats.requests_sent, stats.responses_ok, stats.responses_unavailable,
+                stats.responses_refused, stats.loads_rejected);
     std::printf("steady_window_ms=%u samples=%zu throughput_rps=%.1f\n", stats.steady_window_ms,
                 samples.size(), throughput);
     std::printf("mean_us=%.0f p50_us=%u p90_us=%u p99_us=%u p999_us=%u max_us=%u\n", mean_us,
                 atlas_loadgen::Percentile(samples, 0.50), atlas_loadgen::Percentile(samples, 0.90),
                 atlas_loadgen::Percentile(samples, 0.99), atlas_loadgen::Percentile(samples, 0.999),
                 atlas_loadgen::Percentile(samples, 1.0));
+    // 🔴 Printed only for a ramp. A fixed-concurrency run's single stage IS the block above, and
+    // printing it twice would invite reading the repetition as a second measurement.
+    if (stats.stages.size() > 1) {
+        std::printf(
+            "\n--- per stage --- (the aggregate above spans every stage and is therefore an "
+            "average, not a capacity)\n");
+        for (std::size_t index = 0; index < stats.stages.size(); ++index) {
+            const atlas_loadgen::StageStats& stage = stats.stages[index];
+            std::vector<UInt32> stage_samples = stage.latencies_us;
+            std::ranges::sort(stage_samples);
+            const Float64 stage_seconds = static_cast<Float64>(stage.window_ms) / 1000.0;
+            const Float64 stage_throughput =
+                stage_seconds > 0.0 ? static_cast<Float64>(stage_samples.size()) / stage_seconds
+                                    : 0.0;
+            const std::size_t answered =
+                stage.responses_ok + stage.responses_rejected + stage.responses_refused;
+            // 🔴 The rejection RATE, with its denominator on the same line. A rejection count alone
+            // cannot be read: 600 out of 700 and 600 out of 60000 are opposite statements.
+            const Float64 reject_percent =
+                answered > 0 ? (static_cast<Float64>(stage.responses_rejected) * 100.0) /
+                                   static_cast<Float64>(answered)
+                             : 0.0;
+            std::vector<UInt32> ok_samples = stage.ok_latencies_us;
+            std::ranges::sort(ok_samples);
+            const Float64 ok_throughput =
+                stage_seconds > 0.0 ? static_cast<Float64>(ok_samples.size()) / stage_seconds : 0.0;
+            std::printf(
+                "stage=%zu connections=%zu window_ms=%u samples=%zu throughput_rps=%.1f ok=%zu "
+                "ok_rps=%.1f rejected=%zu reject_pct=%.2f refused=%zu p50_us=%u p90_us=%u "
+                "p99_us=%u max_us=%u ok_p50_us=%u ok_p90_us=%u ok_p99_us=%u ok_max_us=%u\n",
+                index, stage.connections, stage.window_ms, stage_samples.size(), stage_throughput,
+                stage.responses_ok, ok_throughput, stage.responses_rejected, reject_percent,
+                stage.responses_refused, atlas_loadgen::Percentile(stage_samples, 0.50),
+                atlas_loadgen::Percentile(stage_samples, 0.90),
+                atlas_loadgen::Percentile(stage_samples, 0.99),
+                atlas_loadgen::Percentile(stage_samples, 1.0),
+                atlas_loadgen::Percentile(ok_samples, 0.50),
+                atlas_loadgen::Percentile(ok_samples, 0.90),
+                atlas_loadgen::Percentile(ok_samples, 0.99),
+                atlas_loadgen::Percentile(ok_samples, 1.0));
+        }
+    }
     if (stats.watchdog_fired) {
         // 🔴 Loud, because every figure above is then suspect: a connection that never came back
         // contributed no samples, so the percentiles describe only the requests that survived.
@@ -301,6 +378,12 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
                 options.server_id = static_cast<UInt16>(ParseUnsigned(value));
             } else if (key == "--first-character") {
                 options.first_character_id = ParseUnsigned(value);
+            } else if (key == "--no-delay") {
+                options.no_delay = ParseUnsigned(value) != 0;
+            } else if (key == "--ramp") {
+                options.ramp_stages = ParseStageList(value);
+            } else if (key == "--stage-seconds") {
+                options.stage_seconds = static_cast<UInt32>(ParseUnsigned(value));
             } else if (key == "--sample-jsonl") {
                 options.sample_jsonl_path = std::string(value);
             } else if (key == "--probe-file") {
@@ -308,6 +391,31 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
             } else {
                 ATLAS_THROW(atlas::Exception, "unknown option '{}'", key);
             }
+        }
+        if (!options.ramp_stages.empty()) {
+            ATLAS_CHECK(options.stage_seconds > 0, "--ramp needs --stage-seconds");
+            // 🔴 CLOSED LOOP ONLY, and the reason is the phase spread of §16.1a. An open-loop ramp
+            // would have to re-pace every connection at each stage boundary, because the
+            // per-connection interval is the aggregate rate divided by a connection count that the
+            // ramp changes. Getting that wrong reintroduces the thundering herd that once had this
+            // harness reporting its own burst as 53 ms of server latency, and a ramp exists to find
+            // the capacity limit — which is what a closed loop answers.
+            ATLAS_CHECK(options.rate_per_second == 0,
+                        "--ramp is closed loop only; drop --rate or drop --ramp");
+            ATLAS_CHECK(options.warmup_seconds < options.stage_seconds,
+                        "--warmup is the per-stage discarded prefix in ramp mode, so it must be "
+                        "shorter than --stage-seconds");
+            ATLAS_CHECK(options.ramp_stages.front() > 0, "--ramp stages must be at least 1");
+            for (std::size_t index = 1; index < options.ramp_stages.size(); ++index) {
+                // Connections join at a stage boundary and never leave, so a stage that asked for
+                // fewer than its predecessor could not be honoured — and silently honouring the
+                // larger number would report a ramp the run did not apply.
+                ATLAS_CHECK(options.ramp_stages[index] > options.ramp_stages[index - 1],
+                            "--ramp must be strictly increasing");
+            }
+            options.connections = options.ramp_stages.back();
+            options.duration_seconds =
+                options.stage_seconds * static_cast<UInt32>(options.ramp_stages.size());
         }
         ATLAS_CHECK(options.connections > 0, "--connections must be at least 1");
         ATLAS_CHECK(options.warmup_seconds < options.duration_seconds,

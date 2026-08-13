@@ -1,5 +1,6 @@
 #pragma once
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,27 @@ struct LoadOptions {
     atlas::UInt64 first_character_id{900000};
     atlas::UInt16 server_id{1};
 
+    // `TCP_NODELAY` on the HARNESS's sockets (§16.1i). 🔴 Absent = the option is not touched at
+    // all, which is what every §16.1 run did and is why the default is an empty optional rather
+    // than `false`.
+    //
+    // 🔴 THIS IS THE CLIENT'S SOCKET, NOT THE SERVER'S. §9.3-(3) sets `no_delay(true)` on every
+    // accepted socket from a literal in `atlas/net/acceptor.cpp`, and there is no runtime key for
+    // it — contrasting THAT side means rebuilding the image, which is a change to the core rather
+    // than to this harness. What this flag contrasts is the same option, the same mechanism and the
+    // same loopback path, on the request half of the round trip.
+    std::optional<bool> no_delay;
+
+    // The ramp-up axis (§16.1i). Each entry is a STAGE's connection count, in order, and every
+    // stage runs for `stage_seconds`. Connections join at stage boundaries and never leave, so the
+    // list has to be strictly increasing.
+    //
+    // 🔴 EMPTY IS THE DEFAULT AND IT IS THE FIXED-CONCURRENCY MODE EVERY §16.1 TABLE WAS MEASURED
+    // WITH. Ramp-up is an added mode, not a replacement: the moment the default changes, the path
+    // back to the numbers already in the document is gone and none of them can be re-run.
+    std::vector<std::size_t> ramp_stages;
+    atlas::UInt32 stage_seconds{0};
+
     // The visualisation axis (§16.1a · loadgen/live_view.h). 🔴 BOTH DEFAULT TO OFF AND THAT IS
     // LOAD BEARING: with neither set the harness allocates no metrics sink, starts no sampler
     // thread and prints exactly what it printed for the §16.1 tables, so a run taken today is
@@ -61,6 +83,26 @@ struct LoadOptions {
     // Path to a file an external probe loop keeps current, in milliseconds. The harness reads it,
     // never measures it — live_view.h says why.
     std::string probe_file_path;
+};
+
+// One stage's steady window. 🔴 A fixed-concurrency run is ONE stage, so this is not a second way
+// of reporting — it is the same aggregation with the stage list length set to 1.
+struct StageStats {
+    std::size_t connections{0};
+    atlas::UInt32 window_ms{0};
+    std::size_t responses_ok{0};
+    // 🔴 REJECTED, NOT FAILED. `kEquipResponseUnavailable` past the DB queue cap (§10.8) says the
+    // server declined the work and kept the connection; the client's next request is served
+    // normally. Adding this to the failure count would turn "the server refused" into "the server
+    // broke", and those are opposite conclusions about the same run.
+    std::size_t responses_rejected{0};
+    std::size_t responses_refused{0};
+    std::vector<atlas::UInt32> latencies_us;
+    // 🔴 THE ACCEPTED WORK ONLY, and the table is unreadable without it. A rejection comes back in
+    // microseconds because nothing ran, so once most answers are rejections the mixed p50 COLLAPSES
+    // — and a reader would take that for "the server got faster under overload". The question the
+    // ramp is asked is what happens to the requests the server did serve.
+    std::vector<atlas::UInt32> ok_latencies_us;
 };
 
 struct LoadStats {
@@ -80,10 +122,21 @@ struct LoadStats {
     // every other refusal.
     std::size_t responses_unavailable{0};
     std::size_t responses_refused{0};
+    // A character load the server declined the same way (`LoadResult::Unavailable`). 🔴 Counted and
+    // RETRIED, never fatal: past the queue cap a joining connection can be turned away on its first
+    // request, and treating that as a lost connection would delete concurrency from the ramp
+    // exactly at the load level the ramp exists to describe.
+    std::size_t loads_rejected{0};
+    // Connections whose `--no-delay` request the OS refused. 🔴 Reported, because a non-zero here
+    // means the cell measured something other than its own label.
+    std::size_t no_delay_failures{0};
 
-    // Steady-state equip round trips, microseconds, unsorted.
+    // Steady-state equip round trips, microseconds, unsorted. In a ramp-up run this is the union of
+    // the stages' windows and 🔴 the throughput derived from it is an average across stages, not a
+    // capacity — `stages` below is what carries the answer.
     std::vector<atlas::UInt32> latencies_us;
     atlas::UInt32 steady_window_ms{0};
+    std::vector<StageStats> stages;
     // The watchdog had to stop the io_context because a connection never came back. Any run with
     // this set is reported as suspect rather than quietly trimmed.
     bool watchdog_fired{false};

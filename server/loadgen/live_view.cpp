@@ -2,12 +2,14 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <format>
 #include <fstream>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "atlas/core/ctx.h"
 #include "atlas/core/error.h"
@@ -49,37 +51,74 @@ std::string OptionalNumber(Float64 value) {
     return std::format("{:.3f}", value);
 }
 
+// The stage a sample fell in: the last mark that had already opened. Linear because the list is a
+// handful of entries and a binary search here would be longer than the thing it replaces.
+std::size_t StageIndexAt(const std::vector<StageMark>& stages, Float64 elapsed_seconds) {
+    std::size_t index = 0;
+    for (std::size_t candidate = 0; candidate < stages.size(); ++candidate) {
+        if (stages[candidate].begins_at_seconds <= elapsed_seconds) {
+            index = candidate;
+        }
+    }
+    return index;
+}
+
 }  // namespace
 
 LiveMetrics::LiveMetrics() {
     for (std::atomic<UInt32>& bucket : buckets_) {
         bucket.store(0, std::memory_order_relaxed);
     }
+    for (std::atomic<UInt32>& bucket : ok_buckets_) {
+        bucket.store(0, std::memory_order_relaxed);
+    }
 }
 
-void LiveMetrics::RecordLatency(UInt32 micros) noexcept {
+void LiveMetrics::RecordLatency(UInt32 micros, bool accepted) noexcept {
     auto index = static_cast<std::size_t>(micros / kBucketMicros);
     if (index > kRangeBuckets) {
         index = kRangeBuckets;
     }
     buckets_[index].fetch_add(1, std::memory_order_relaxed);
+    if (accepted) {
+        ok_buckets_[index].fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void LiveMetrics::RecordError() noexcept { errors_.fetch_add(1, std::memory_order_relaxed); }
 
-void LiveMetrics::Drain(Float64 window_seconds, LiveSample& sample) noexcept {
+void LiveMetrics::RecordRejection() noexcept {
+    rejections_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void LiveMetrics::RecordLoadRejection() noexcept {
+    load_rejections_.fetch_add(1, std::memory_order_relaxed);
+}
+
+UInt64 LiveMetrics::DrainInto(Histogram& buckets) noexcept {
     UInt64 total = 0;
     for (std::size_t index = 0; index < kBucketCount; ++index) {
-        const UInt32 count = buckets_[index].exchange(0, std::memory_order_relaxed);
+        const UInt32 count = buckets[index].exchange(0, std::memory_order_relaxed);
         scratch_[index] = count;
         total += count;
     }
+    return total;
+}
 
+void LiveMetrics::Drain(Float64 window_seconds, LiveSample& sample) noexcept {
+    const UInt64 accepted = DrainInto(ok_buckets_);
+    sample.ok_p50_ms = PercentileMs(accepted, 0.50);
+    sample.ok_p99_ms = PercentileMs(accepted, 0.99);
+
+    const UInt64 total = DrainInto(buckets_);
     sample.requests_per_second =
         window_seconds > 0.0 ? static_cast<Float64>(total) / window_seconds : 0.0;
     sample.p50_ms = PercentileMs(total, 0.50);
     sample.p99_ms = PercentileMs(total, 0.99);
     sample.errors = errors_.load(std::memory_order_relaxed);
+    sample.responses = total;
+    sample.rejections = rejections_.exchange(0, std::memory_order_relaxed);
+    sample.load_rejections = load_rejections_.load(std::memory_order_relaxed);
 }
 
 Float64 LiveMetrics::PercentileMs(UInt64 total, Float64 fraction) const noexcept {
@@ -192,14 +231,23 @@ void LiveView::Run() {
         sample.inflight = live_.load();
         sample.fsync_probe_ms = ReadProbe();
         metrics_.Drain(window_seconds, sample);
+        if (!options_.stages.empty()) {
+            sample.stage = StageIndexAt(options_.stages, sample.elapsed_seconds);
+            sample.stage_connections = options_.stages[sample.stage].connections;
+        }
 
         if (jsonl.is_open()) {
             // 🔴 Flushed per record. A run that is killed at its worst moment is exactly the run
             // whose samples are worth having, and a buffered tail would lose it.
             jsonl << std::format(R"({{"kind":"sample","t":{:.3f},"rps":{:.2f},"p50":{:.3f},)"
-                                 R"("p99":{:.3f},"inflight":{},"errors":{},"fsync_probe_ms":{}}})",
+                                 R"("p99":{:.3f},"ok_p50":{:.3f},"ok_p99":{:.3f},"inflight":{},)"
+                                 R"("errors":{},"responses":{},"rejections":{},)"
+                                 R"("load_rejections":{},"stage":{},"stage_connections":{},)"
+                                 R"("fsync_probe_ms":{}}})",
                                  sample.elapsed_seconds, sample.requests_per_second, sample.p50_ms,
-                                 sample.p99_ms, sample.inflight, sample.errors,
+                                 sample.p99_ms, sample.ok_p50_ms, sample.ok_p99_ms, sample.inflight,
+                                 sample.errors, sample.responses, sample.rejections,
+                                 sample.load_rejections, sample.stage, sample.stage_connections,
                                  OptionalNumber(sample.fsync_probe_ms))
                   << '\n';
             jsonl.flush();
@@ -233,10 +281,24 @@ void LiveView::Render(const LiveSample& sample) {
     // measurement run should have to configure first.
     frame_ += std::format("atlas_loadgen live   t = {:.0f} s\x1b[K\n", sample.elapsed_seconds);
     frame_ += std::format("  req/s     {:>10.1f}\x1b[K\n", sample.requests_per_second);
-    frame_ += std::format("  p50       {:>10.1f} ms\x1b[K\n", sample.p50_ms);
-    frame_ += std::format("  p99       {:>10.1f} ms\x1b[K\n", sample.p99_ms);
+    frame_ += std::format("  p50       {:>10.1f} ms  (accepted {:.1f})\x1b[K\n", sample.p50_ms,
+                          sample.ok_p50_ms);
+    frame_ += std::format("  p99       {:>10.1f} ms  (accepted {:.1f})\x1b[K\n", sample.p99_ms,
+                          sample.ok_p99_ms);
     frame_ += std::format("  inflight  {:>10}\x1b[K\n", sample.inflight);
     frame_ += std::format("  errors    {:>10}\x1b[K\n", sample.errors);
+    // 🔴 Its own line, directly under errors and never added to it. Watching a ramp cross capacity,
+    // this line going up while that one stays at 0 IS the observation (§10.8).
+    const Float64 reject_percent = sample.responses > 0
+                                       ? (static_cast<Float64>(sample.rejections) * 100.0) /
+                                             static_cast<Float64>(sample.responses)
+                                       : 0.0;
+    frame_ +=
+        std::format("  rejected  {:>10} ({:.1f} %)\x1b[K\n", sample.rejections, reject_percent);
+    if (sample.stage_connections > 0) {
+        frame_ += std::format("  stage     {:>10} ({} connections)\x1b[K\n", sample.stage,
+                              sample.stage_connections);
+    }
     frame_ += std::format("  req/s over the last {} s\x1b[K\n", spark_.size());
     frame_ += "  [";
     for (const Float64 value : spark_) {
