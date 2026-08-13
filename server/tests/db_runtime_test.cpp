@@ -30,6 +30,7 @@
 #include "atlas/net/io_runner.h"
 #include "atlas/net/net_types.h"
 #include "generated/db/characters_row.h"
+#include "tests/optional_assert.h"
 
 // Integration suite for the ORM runtime (architecture-design.md §10.1). It talks to a REAL MySQL —
 // `docker compose --env-file server/.env up -d mysql` — because the things under test are exactly
@@ -285,7 +286,7 @@ TEST_F(DbRuntimeTest, PoolRevivesAConnectionTheServerClosedUnderneathIt) {
     UInt64 killed_id = 0;
     {
         std::optional<atlas::PooledConnection> lease = pool.Acquire(atlas::Seconds{2});
-        ASSERT_TRUE(lease.has_value());
+        ATLAS_ASSERT_HAS_VALUE(lease);
         killed_id = DriverConnectionId(**lease);
         KillDriverConnection(*probe_, killed_id);
     }  // The dead connection goes back to the pool, exactly as it would in production.
@@ -293,13 +294,16 @@ TEST_F(DbRuntimeTest, PoolRevivesAConnectionTheServerClosedUnderneathIt) {
     // 🔴 No process restart between these two lines. That is the entire claim: before this node the
     // pool handed the corpse back out and every request after a MySQL restart failed forever.
     std::optional<atlas::PooledConnection> revived = pool.Acquire(atlas::Seconds{5});
-    ASSERT_TRUE(revived.has_value());
+    ATLAS_ASSERT_HAS_VALUE(revived);
+    // Bound once right after the guard: the optional is never dereferenced again, least of all
+    // inside an EXPECT_ macro body, which is where the dataflow check loses the checked location.
+    atlas::PooledConnection& lease = *revived;
 
     // A different server-side thread id, so it really is a new socket and not the killed one
     // answering; and it serves a real statement, which is the only proof the handle is usable.
-    EXPECT_NE(DriverConnectionId(**revived), killed_id);
+    EXPECT_NE(DriverConnectionId(*lease), killed_id);
     const std::vector<DbValue> parameters{DbValue{kTestServerId}};
-    EXPECT_NO_THROW((*revived)->Prepare(kDeleteAllForServerSql).Execute(parameters));
+    EXPECT_NO_THROW(lease->Prepare(kDeleteAllForServerSql).Execute(parameters));
 }
 
 TEST_F(DbRuntimeTest, ReconnectDropsThePreparedStatementCache) {
