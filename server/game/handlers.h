@@ -192,8 +192,30 @@ public:
     // would strand jobs that had already committed.
     void Stop() noexcept;
 
+    // What the server knows about ITSELF (architecture-design.md §16.1).
+    //
+    // 🔴 Every number in §16.1 was measured by the load client, which means the server's own state
+    // was inferred from outside. Refusals in particular cannot be counted from out there: a client
+    // sees "unavailable" and cannot tell a full queue from an exhausted pool. These five are the
+    // minimum that makes the difference observable — and they stop at five deliberately. No HTTP
+    // endpoint, no metrics exporter, no new dependency: this slice has no such axis, and the
+    // exposure is one periodic log line in main.cpp.
+    struct Counters {
+        std::size_t live_sessions{0};
+        std::size_t db_queue_depth{0};
+        std::size_t db_queue_capacity{0};
+        atlas::UInt64 db_rejected{0};
+        atlas::UInt64 db_acquire_failures{0};
+        atlas::UInt64 db_acquire_wait_micros{0};
+    };
+
     [[nodiscard]] const atlas::Endpoint& LocalEndpoint() const noexcept;
+    // 🔴 The session count comes from THIS registry, not from atlas/net. The core hands out
+    // sessions and does not keep a census of them; how many are live is a fact about the game
+    // server that owns the map, and reaching into the network layer for it would put the same
+    // answer in two places.
     [[nodiscard]] std::size_t LiveSessionCount() const;
+    [[nodiscard]] Counters ReadCounters() const;
     [[nodiscard]] const HandlerTable& Handlers() const noexcept { return handlers_; }
 
 private:

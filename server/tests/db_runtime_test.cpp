@@ -102,6 +102,24 @@ std::vector<DbValue> MakeCharacterRow(UInt64 character_id, const std::string& na
             DbValue{created_at},    DbValue{std::monostate{}}};
 }
 
+// 🔴 How a connection dies for real: the SERVER closes it (a restart, or wait_timeout expiring on
+// an idle one) while the pool still believes it owns a live socket. `KILL` from a second connection
+// reproduces exactly that, without stopping the container the whole suite shares. Both statements
+// are fixed text with a placeholder, like everything else in this layer.
+constexpr std::string_view kConnectionIdSql = "SELECT CONNECTION_ID()";
+constexpr std::string_view kKillConnectionSql = "KILL ?";
+
+UInt64 DriverConnectionId(atlas::Connection& connection) {
+    const std::vector<DbValue> no_parameters;
+    const std::vector<DbRow> rows = connection.Prepare(kConnectionIdSql).Query(no_parameters);
+    return rows.empty() ? UInt64{0} : std::get<UInt64>(rows[0][0]);
+}
+
+void KillDriverConnection(atlas::Connection& killer, UInt64 connection_id) {
+    const std::vector<DbValue> parameters{DbValue{connection_id}};
+    killer.Prepare(kKillConnectionSql).Execute(parameters);
+}
+
 class DbRuntimeTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -261,6 +279,66 @@ TEST_F(DbRuntimeTest, TransactionRollsBackWhenTheScopeUnwindsInsideGuarded) {
     EXPECT_TRUE(SelectByPk(reader, 102).empty());
 }
 
+TEST_F(DbRuntimeTest, PoolRevivesAConnectionTheServerClosedUnderneathIt) {
+    atlas::ConnectionPool pool(config_, 1);
+
+    UInt64 killed_id = 0;
+    {
+        std::optional<atlas::PooledConnection> lease = pool.Acquire(atlas::Seconds{2});
+        ASSERT_TRUE(lease.has_value());
+        killed_id = DriverConnectionId(**lease);
+        KillDriverConnection(*probe_, killed_id);
+    }  // The dead connection goes back to the pool, exactly as it would in production.
+
+    // 🔴 No process restart between these two lines. That is the entire claim: before this node the
+    // pool handed the corpse back out and every request after a MySQL restart failed forever.
+    std::optional<atlas::PooledConnection> revived = pool.Acquire(atlas::Seconds{5});
+    ASSERT_TRUE(revived.has_value());
+
+    // A different server-side thread id, so it really is a new socket and not the killed one
+    // answering; and it serves a real statement, which is the only proof the handle is usable.
+    EXPECT_NE(DriverConnectionId(**revived), killed_id);
+    const std::vector<DbValue> parameters{DbValue{kTestServerId}};
+    EXPECT_NO_THROW((*revived)->Prepare(kDeleteAllForServerSql).Execute(parameters));
+}
+
+TEST_F(DbRuntimeTest, ReconnectDropsThePreparedStatementCache) {
+    atlas::Connection connection(config_);
+    const UInt64 killed_id = DriverConnectionId(connection);
+    connection.Prepare(atlas::generated::kCharactersSelectByPkSql);
+    const UInt64 prepared_before = connection.PrepareCount();
+    ASSERT_EQ(prepared_before, 2U);
+
+    KillDriverConnection(*probe_, killed_id);
+    ASSERT_TRUE(connection.EnsureAlive());
+    EXPECT_NE(DriverConnectionId(connection), killed_id);
+
+    // 🔴 The evidence is the counter, not a pointer comparison: the old PreparedStatement objects
+    // were destroyed along with the cache, so comparing their addresses would be reading freed
+    // memory. What matters is that the SAME sql text prepares again — if it had not, the cache
+    // would still be holding a MYSQL_STMT that belongs to the socket the server closed, and using
+    // it is a use-after-free inside the driver rather than an error anyone gets to see.
+    connection.Prepare(atlas::generated::kCharactersSelectByPkSql);
+    EXPECT_EQ(connection.PrepareCount(), prepared_before + 2U);
+}
+
+TEST_F(DbRuntimeTest, ReconnectCannotInventADatabaseThatIsNotThere) {
+    // Same entry point the reconnect takes (Connection::Open), pointed at an endpoint with nothing
+    // behind it. When it fails, EnsureAlive returns false and the pool reports its existing
+    // unavailable answer — there is no path here that yields rows or a silent success.
+    //
+    // 🔴 The end-to-end version of this — the database itself going away under a running server —
+    // is `docker compose restart mysql`, which a test may not do to the container the rest of the
+    // suite is using. It is verified by hand and written down in architecture-design.md §10.
+    DbConnectionConfig unreachable = config_;
+    unreachable.port = UInt16{1};
+
+    EXPECT_THROW(static_cast<void>(std::make_unique<atlas::Connection>(unreachable)),
+                 atlas::DbException);
+    EXPECT_THROW(static_cast<void>(std::make_unique<atlas::ConnectionPool>(unreachable, 1)),
+                 atlas::DbException);
+}
+
 TEST_F(DbRuntimeTest, CtxCrossesIntoTheDbThreadByValue) {
     atlas::ConnectionPool pool(config_, 2);
     atlas::DbRunner runner(pool, 2, atlas::Seconds{2});
@@ -275,7 +353,7 @@ TEST_F(DbRuntimeTest, CtxCrossesIntoTheDbThreadByValue) {
     std::atomic<bool> had_connection{false};
     std::atomic<bool> done{false};
 
-    ASSERT_TRUE(runner.Submit(
+    const atlas::SubmitResult submitted = runner.Submit(
         ctx,
         [&](Ctx& job_ctx, atlas::Connection* connection) {
             // Read from the INSTALLED ledger, not from job_ctx: proving the value crossed is only
@@ -289,7 +367,8 @@ TEST_F(DbRuntimeTest, CtxCrossesIntoTheDbThreadByValue) {
             // The ledger the job left behind, carried through to the completion.
             EXPECT_EQ(done_ctx.tx_state, TxState::Committed);
             done.store(true);
-        }));
+        });
+    ASSERT_EQ(submitted, atlas::SubmitResult::Accepted);
 
     const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{5};
     while (!done.load() && atlas::Clock::now() < deadline) {
@@ -321,7 +400,7 @@ TEST_F(DbRuntimeTest, CompletionRunsBackOnTheOriginatingStrand) {
     Ctx ctx;
     ctx.trace_id = 24680;
 
-    ASSERT_TRUE(runner.Submit(
+    const atlas::SubmitResult submitted = runner.Submit(
         ctx,
         [&](Ctx&, atlas::Connection* connection) {
             // 🔴 The blocking half must NOT be on the strand — that is the whole point of the
@@ -337,7 +416,8 @@ TEST_F(DbRuntimeTest, CompletionRunsBackOnTheOriginatingStrand) {
         },
         [strand](std::function<void()> completion) {
             atlas::asio::post(strand, std::move(completion));
-        }));
+        });
+    ASSERT_EQ(submitted, atlas::SubmitResult::Accepted);
 
     const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{5};
     while (!done.load() && atlas::Clock::now() < deadline) {
@@ -349,6 +429,99 @@ TEST_F(DbRuntimeTest, CompletionRunsBackOnTheOriginatingStrand) {
     EXPECT_TRUE(done.load());
     EXPECT_TRUE(job_off_strand.load());
     EXPECT_TRUE(completion_on_strand.load());
+}
+
+// 🔴 The regression line for load shedding (architecture-design.md §10.8). Without a cap the queue
+// grows without bound, and the server keeps committing requests whose clients gave up long ago.
+TEST_F(DbRuntimeTest, QueueRefusesPastItsCapAndStopsGrowingThere) {
+    atlas::ConnectionPool pool(config_, 1);
+    atlas::DbRunner runner(pool, 1, atlas::Seconds{2});
+    const std::size_t capacity = runner.QueueCapacity();
+    ASSERT_EQ(capacity, atlas::DbRunner::kMaxQueuedJobsPerThread);
+    runner.Start();
+
+    // Every job parks until the test releases it, so the queue drains only on command.
+    std::atomic<bool> release{false};
+    std::atomic<std::size_t> ran{0};
+    std::atomic<std::size_t> completed{0};
+    std::size_t accepted = 0;
+    std::size_t rejected = 0;
+
+    for (std::size_t index = 0; index < capacity + 8; ++index) {
+        const atlas::SubmitResult result = runner.Submit(
+            Ctx{},
+            [&](Ctx&, atlas::Connection*) {
+                ran.fetch_add(1);
+                while (!release.load()) {
+                    std::this_thread::yield();
+                }
+            },
+            [&](const Ctx&) { completed.fetch_add(1); });
+        if (result == atlas::SubmitResult::Accepted) {
+            ++accepted;
+        } else {
+            EXPECT_EQ(result, atlas::SubmitResult::Rejected);
+            ++rejected;
+        }
+        // 🔴 The property, checked after EVERY submit rather than once at the end: the queue never
+        // grows past the cap. A cap that is only true at the end is a cap that leaked.
+        EXPECT_LE(runner.PendingCount(), capacity);
+    }
+
+    // The single worker is parked inside the first job, so the queue holds the rest.
+    EXPECT_GE(accepted, capacity);
+    EXPECT_GT(rejected, 0U);
+    EXPECT_EQ(accepted + rejected, capacity + 8);
+    EXPECT_EQ(runner.RejectedCount(), static_cast<UInt64>(rejected));
+
+    release.store(true);
+    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{20};
+    while (completed.load() < accepted && atlas::Clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    runner.Stop();
+
+    // 🔴 A refused job runs NOTHING — not the work, not the completion. The alternative (a
+    // completion invoked with a failure) was rejected because it would hand the caller two ways to
+    // learn the same thing; what must never happen is the third option, disappearing in silence,
+    // and that is what these two equalities pin down.
+    EXPECT_EQ(ran.load(), accepted);
+    EXPECT_EQ(completed.load(), accepted);
+}
+
+// 🔴 The regression line for the ban on overloading one return value with two meanings: `false`
+// used to mean "stopped", and folding "overloaded" into it would leave the caller unable to tell a
+// shutdown from a busy server (§10.6 is where the same overlap was taken apart before).
+TEST_F(DbRuntimeTest, ARefusedSubmitIsDistinctFromAStoppedOne) {
+    atlas::ConnectionPool pool(config_, 1);
+    atlas::DbRunner runner(pool, 1, atlas::Seconds{2});
+
+    // Never started.
+    EXPECT_EQ(runner.Submit(Ctx{}, [](Ctx&, atlas::Connection*) {}), atlas::SubmitResult::Stopped);
+    EXPECT_EQ(runner.RejectedCount(), 0U);
+
+    runner.Start();
+    std::atomic<bool> release{false};
+    std::size_t rejected = 0;
+    for (std::size_t index = 0; index < runner.QueueCapacity() + 8; ++index) {
+        const atlas::SubmitResult result = runner.Submit(Ctx{}, [&](Ctx&, atlas::Connection*) {
+            while (!release.load()) {
+                std::this_thread::yield();
+            }
+        });
+        if (result == atlas::SubmitResult::Rejected) {
+            ++rejected;
+        }
+    }
+    EXPECT_GT(rejected, 0U);
+    EXPECT_EQ(runner.RejectedCount(), static_cast<UInt64>(rejected));
+
+    release.store(true);
+    runner.Stop();
+
+    // Stopped after a drain, and the rejection count did not move: the two answers stay separate.
+    EXPECT_EQ(runner.Submit(Ctx{}, [](Ctx&, atlas::Connection*) {}), atlas::SubmitResult::Stopped);
+    EXPECT_EQ(runner.RejectedCount(), static_cast<UInt64>(rejected));
 }
 
 }  // namespace

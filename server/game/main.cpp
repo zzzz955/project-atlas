@@ -48,6 +48,14 @@ std::string IniPath(const char* argument) {
 constexpr std::size_t kDbPoolSize = 4;
 constexpr std::size_t kDbThreads = 2;
 
+// How often the server states its own counters (architecture-design.md §16.1).
+//
+// 🔴 Five seconds, and a single INFO line — never one per request. §16.1g measured a per-request
+// log line as a real server-side cost, and a counter that distorts the load it is describing is
+// worse than no counter. One line per five seconds is under a thousandth of that traffic, and the
+// counters are cumulative so nothing is lost between samples.
+constexpr atlas::Seconds kCounterInterval{5};
+
 }  // namespace
 
 int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signature.
@@ -130,8 +138,24 @@ int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signa
         // 🔴 Polled rather than an asio signal_set on the server's own io_context: the handler
         // would run on a worker thread, and Stop() joins those workers — a thread cannot join
         // itself.
+        atlas::TimePoint next_counter_log = atlas::Clock::now() + kCounterInterval;
         while (!g_stop_requested.load()) {
             std::this_thread::sleep_for(atlas::Millis{200});
+            const atlas::TimePoint now = atlas::Clock::now();
+            if (now < next_counter_log) {
+                continue;
+            }
+            next_counter_log = now + kCounterInterval;
+            const atlas_demo::GameServer::Counters counters = server.ReadCounters();
+            // 🔴 The queue depth is printed with its cap because a depth alone is unreadable: 40 is
+            // idle at one cap and a shed request away at another. `db_rejected` is what says the
+            // cap was actually reached.
+            ATLAS_LOG_INFO(
+                "counters sessions={} db_queue={}/{} db_rejected={} db_acquire_timeouts={} "
+                "db_acquire_wait_us={}",
+                counters.live_sessions, counters.db_queue_depth, counters.db_queue_capacity,
+                counters.db_rejected, counters.db_acquire_failures,
+                counters.db_acquire_wait_micros);
         }
 
         ATLAS_LOG_INFO("stop requested — draining");

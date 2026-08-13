@@ -1,5 +1,6 @@
 #include "atlas/db/db_runner.h"
 
+#include <chrono>
 #include <optional>
 #include <utility>
 
@@ -11,6 +12,7 @@ namespace atlas {
 DbRunner::DbRunner(ConnectionPool& pool, std::size_t thread_count, Duration acquire_timeout)
     : pool_(&pool),
       thread_count_(thread_count == 0 ? 1 : thread_count),
+      queue_capacity_(thread_count_ * kMaxQueuedJobsPerThread),
       acquire_timeout_(acquire_timeout) {}
 
 DbRunner::~DbRunner() { Stop(); }
@@ -27,7 +29,7 @@ void DbRunner::Start() {
     for (std::size_t index = 0; index < thread_count_; ++index) {
         threads_.emplace_back([this] { WorkerLoop(); });
     }
-    ATLAS_LOG_INFO("db runner started: {} threads", thread_count_);
+    ATLAS_LOG_INFO("db runner started: {} threads, queue cap {}", thread_count_, queue_capacity_);
 }
 
 void DbRunner::Stop() noexcept {
@@ -54,11 +56,19 @@ std::size_t DbRunner::PendingCount() const {
     return queue_.size();
 }
 
-bool DbRunner::Submit(Ctx ctx, Work work, Completion completion, CompletionPoster poster) {
+SubmitResult DbRunner::Submit(Ctx ctx, Work work, Completion completion, CompletionPoster poster) {
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) {
-            return false;
+            return SubmitResult::Stopped;
+        }
+        // 🔴 THE LOAD SHEDDING POINT. Past the cap the job is refused instead of queued, and the
+        // refusal is silent here on purpose: at overload a refusal is the steady state, so a line
+        // per refusal would make the log the next bottleneck (§16.1g). rejected_count_ is what
+        // records it, and the caller reports it to its own client.
+        if (queue_.size() >= queue_capacity_) {
+            rejected_count_.fetch_add(1, std::memory_order_relaxed);
+            return SubmitResult::Rejected;
         }
         // 🔴 The ctx is copied into the job here, at the boundary. Everything past this line runs
         // on another thread and must not reach back into the caller's frame (§9.2).
@@ -71,7 +81,7 @@ bool DbRunner::Submit(Ctx ctx, Work work, Completion completion, CompletionPoste
         queue_.push_back(std::move(job));
     }
     pending_.notify_one();
-    return true;
+    return SubmitResult::Accepted;
 }
 
 void DbRunner::WorkerLoop() {
@@ -101,8 +111,16 @@ void DbRunner::RunJob(Job job) noexcept {
     // Guarded also installs the ctx ledger, which is what makes the log macros on a DB thread carry
     // the same trace_id as the I/O thread that submitted the job.
     Guarded(job.ctx, [this, &job, &job_ctx] {
+        // §16.1e — DB threads are the pool's only lessees, so timing the lease HERE measures every
+        // lease in the process. Two clock reads against a call that ends in an fsync is noise.
+        const TimePoint lease_started = Clock::now();
         std::optional<PooledConnection> lease = pool_->Acquire(acquire_timeout_);
+        acquire_wait_micros_.fetch_add(
+            static_cast<UInt64>(
+                std::chrono::duration_cast<Micros>(Clock::now() - lease_started).count()),
+            std::memory_order_relaxed);
         if (!lease.has_value()) {
+            acquire_failure_count_.fetch_add(1, std::memory_order_relaxed);
             ATLAS_LOG_ERROR("db job ran without a connection: pool exhausted");
             job.work(job_ctx, nullptr);
             return;

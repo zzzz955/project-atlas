@@ -282,6 +282,20 @@ std::size_t GameServer::LiveSessionCount() const {
     return sessions_.size();
 }
 
+GameServer::Counters GameServer::ReadCounters() const {
+    // 🔴 Not a consistent snapshot, and it does not need to be: each field is read independently
+    // while the server keeps running, so the queue depth may already have moved by the time the
+    // rejection count is read. Freezing all five together would mean holding the queue mutex across
+    // the read — buying a consistency nobody uses at the price of stalling the DB threads on the
+    // interval the metrics are sampled.
+    return Counters{.live_sessions = LiveSessionCount(),
+                    .db_queue_depth = db_runner_.PendingCount(),
+                    .db_queue_capacity = db_runner_.QueueCapacity(),
+                    .db_rejected = db_runner_.RejectedCount(),
+                    .db_acquire_failures = db_runner_.AcquireFailureCount(),
+                    .db_acquire_wait_micros = db_runner_.AcquireWaitMicros()};
+}
+
 void GameServer::RegisterHandlers() {
     handlers_.Register(
         kOpCharacterLoadRequest,
@@ -398,7 +412,7 @@ void GameServer::SubmitCharacterLoad(const std::shared_ptr<atlas::Session>& sess
     const bool was_warm = warm->has_value();
     const UInt16 server_id = options_.server_id;
 
-    const bool queued = db_runner_.Submit(
+    const atlas::SubmitResult submitted = db_runner_.Submit(
         ctx,
         [this, snapshot, warm, server_id, character_id](atlas::Ctx& job_ctx,
                                                         atlas::Connection* connection) {
@@ -436,8 +450,18 @@ void GameServer::SubmitCharacterLoad(const std::shared_ptr<atlas::Session>& sess
         },
         PosterFor(session));
 
-    if (!queued) {
-        ATLAS_LOG_WARN("character load dropped: the DB runner is not accepting work");
+    if (submitted != atlas::SubmitResult::Accepted) {
+        // 🔴 REFUSED, NOT DROPPED. The job never ran and its completion never will, so the answer
+        // has to be sent from here or the client waits for a response that does not exist — which
+        // is what this path used to do (it logged and returned). LoadResult::Unavailable is the
+        // code that already means "the database side could not serve you"; §10.3's exhausted pool
+        // and a full queue are the same fact to a client, and the client's move is the same too.
+        // Runs on the session strand — HandleCharacterLoad is dispatched there and the cache
+        // completion is posted back to it — so `state` still needs no lock.
+        snapshot->result = LoadResult::Unavailable;
+        ++state->send_seq;
+        atlas::SendFrame(*session, kOpCharacterLoadResponse, state->send_seq,
+                         EncodeLoadResponse(*snapshot));
     }
 }
 
@@ -474,7 +498,7 @@ void GameServer::HandleEquip(const std::shared_ptr<atlas::Session>& session,
     // DB thread's guard swallowed it (§11.2b). Either way the client is told, rather than left
     // waiting for a response that is not coming.
     auto outcome = std::make_shared<std::optional<EquipService::Outcome>>();
-    const bool queued = db_runner_.Submit(
+    const atlas::SubmitResult submitted = db_runner_.Submit(
         MakeCtx(session, state),
         [this, outcome, request](atlas::Ctx& job_ctx, atlas::Connection* connection) {
             if (connection == nullptr) {
@@ -500,8 +524,21 @@ void GameServer::HandleEquip(const std::shared_ptr<atlas::Session>& session,
         },
         PosterFor(session));
 
-    if (!queued) {
-        ATLAS_LOG_WARN("equip request dropped: the DB runner is not accepting work");
+    if (submitted != atlas::SubmitResult::Accepted) {
+        // 🔴 NO NEW RESULT CODE AND NO NEW OPCODE. kEquipResponseUnavailable is documented above as
+        // one of "the two refusals decided before the service is ever called", and an overload
+        // refusal is exactly that — decided before EquipService is reached. Inventing a code for it
+        // would change the payload contract, and a contract change is a generator input plus the
+        // Clarification Protocol, for a distinction the client acts on identically.
+        //
+        // 🔴 AND THE CONNECTION STAYS OPEN. Closing is the frame layer's answer to a PROTOCOL
+        // VIOLATION — a lying length, a bad CRC, a sequence that went backwards (frame_reader.h).
+        // Overload is not a violation; the peer did nothing wrong. Punishing it the same way erases
+        // the distinction and turns a busy second into a reconnect storm.
+        ++state->send_seq;
+        atlas::SendFrame(*session, kOpEquipResponse, state->send_seq,
+                         EncodeEquipResponse(kEquipResponseUnavailable, request.item_uid,
+                                             static_cast<UInt8>(request.slot), 0));
     }
 }
 

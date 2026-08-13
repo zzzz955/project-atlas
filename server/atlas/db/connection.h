@@ -110,14 +110,37 @@ struct DbConnectionConfig {
 // pool itself. Sharing one across threads corrupts the driver's per-connection state.
 class Connection {
 public:
-    // Connects eagerly; throws DbException when the server refuses.
-    explicit Connection(const DbConnectionConfig& config);
+    // Connects eagerly; throws DbException when the server refuses. By value because the
+    // connection keeps the settings for its own reconnect (see config_ below), so the copy happens
+    // either way and a caller with a temporary gets to move instead.
+    explicit Connection(DbConnectionConfig config);
     ~Connection();
 
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;
     Connection(Connection&&) = delete;
     Connection& operator=(Connection&&) = delete;
+
+    // Checks the connection is still usable and, when it is not, reconnects EXACTLY ONCE. Result:
+    // whether the connection can serve a statement now.
+    //
+    // 🔴 What this is for: MySQL restarting, or `wait_timeout` (8 hours by default) expiring on an
+    // idle connection, closes every socket the pool holds. Without this the pool then hands out
+    // dead connections forever — every request fails, the process stays healthy, and only a restart
+    // fixes it. The failure is permanent, which is what makes it worth code.
+    //
+    // 🔴 ONE attempt, no backoff and no retry loop. A loop here would mean that while the database
+    // is down every DB thread sits in reconnect instead of failing, which converts an outage into a
+    // stall and hammers the server that is trying to come back up. Failing now and retrying on the
+    // NEXT lease is the retry policy, and it is spread over time for free.
+    //
+    // 🔴 A successful reconnect drops the prepared-statement cache. A MYSQL_STMT belongs to the
+    // MYSQL it was prepared on; reusing one across a new socket is worse than "gone away", it is a
+    // use-after-free inside the driver.
+    //
+    // Returning false rather than throwing: a database that went away is an expected failure on
+    // this path and the pool turns it into its existing std::nullopt (§11.2a).
+    [[nodiscard]] bool EnsureAlive();
 
     // Returns the cached statement for `sql`, preparing it on first use only.
     //
@@ -140,6 +163,15 @@ private:
     void Commit();
     void Rollback() noexcept;
     void RestoreAutoCommit() noexcept;
+
+    // The one place a driver handle is opened — the constructor and EnsureAlive share it, so a
+    // reconnect can never negotiate different options than the original connect did.
+    void Open();
+
+    // 🔴 Kept because a reconnect needs the same credentials, and for no other reason. It is never
+    // logged and never formatted into an exception message (§5.4) — the same rule the constructor
+    // already follows when it reports a failed handshake as a bare driver error code.
+    DbConnectionConfig config_;
 
     st_mysql* handle_{nullptr};
     std::unordered_map<std::string, std::unique_ptr<PreparedStatement>> statements_;

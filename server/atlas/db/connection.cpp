@@ -11,11 +11,22 @@
 
 namespace atlas {
 
-Connection::Connection(const DbConnectionConfig& config) {
+Connection::Connection(DbConnectionConfig config) : config_(std::move(config)) { Open(); }
+
+void Connection::Open() {
+    const DbConnectionConfig& config = config_;
     handle_ = mysql_init(nullptr);
     if (handle_ == nullptr) {
         ATLAS_THROW(DbException, "mysql_init failed");
     }
+
+    // 🔴 The driver's own reconnect is pinned OFF, which is also its default — stated rather than
+    // assumed because everything below depends on it. An automatic reconnect inside mysql_ping
+    // would give us back a live socket while statements_ still held MYSQL_STMT handles prepared on
+    // the dead one, and that is precisely the corruption EnsureAlive exists to prevent. Reconnect
+    // is ours, once, with the cache cleared.
+    my_bool reconnect = 0;
+    mysql_options(handle_, MYSQL_OPT_RECONNECT, &reconnect);
 
     // The schema is utf8mb4 (server/generated/db/schema.sql). Negotiating it here rather than
     // relying on the server default keeps a name column round-tripping byte for byte.
@@ -67,7 +78,46 @@ Connection::~Connection() {
     }
 }
 
+bool Connection::EnsureAlive() {
+    // One round trip on the socket the pool is about to lease out. It costs a round trip per lease
+    // and buys the difference between "a few requests failed while MySQL restarted" and "every
+    // request fails until someone restarts the server".
+    if (handle_ != nullptr && mysql_ping(handle_) == 0) {
+        return true;
+    }
+
+    // 🔴 Cache first, and unconditionally — before the handle goes and before the new one arrives.
+    // Every MYSQL_STMT in here was prepared on the socket that just died; carrying one across is a
+    // use-after-free inside the driver rather than an error the driver would report.
+    statements_.clear();
+    if (handle_ != nullptr) {
+        mysql_close(handle_);
+        handle_ = nullptr;
+    }
+
+    try {
+        Open();
+    } catch (const DbException& ex) {
+        // Expected failure, so it is logged and reported as false rather than rethrown: the caller
+        // (ConnectionPool::Acquire) turns it into the std::nullopt it already had for an
+        // unavailable pool. The connection stays in the "not open" state and the NEXT lease tries
+        // again — that, and not a loop in here, is the retry.
+        ATLAS_LOG_WARN("db connection reconnect failed: {}", ex.what());
+        return false;
+    }
+
+    // 🔴 WARN, not INFO. A reconnect means something took the database away; it recovered, but the
+    // operator still wants to see how often it happens.
+    ATLAS_LOG_WARN("db connection re-established after the server closed it");
+    return true;
+}
+
 PreparedStatement& Connection::Prepare(std::string_view sql) {
+    // Reachable only after EnsureAlive returned false and the caller used the connection anyway.
+    // A programming error rather than an expected failure, so it throws (§11.2a) — the alternative
+    // is handing a null handle to the driver, which crashes the process.
+    ATLAS_CHECK(handle_ != nullptr, "db connection is not open");
+
     std::string key(sql);
     const auto found = statements_.find(key);
     if (found != statements_.end()) {

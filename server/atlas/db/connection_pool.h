@@ -45,8 +45,19 @@ private:
 // Fixed-size pool of driver connections.
 //
 // 🔴 Fixed size, full stop. No dynamic resizing, no autoscaling, no reconnect backoff, no health
-// check and no read/write split. Every one of those is how a connection pool turns into a project
-// of its own; the Phase-1 shape is a fixed pool plus a clear failure when it is empty.
+// check thread, no circuit breaker and no read/write split. Every one of those is how a connection
+// pool turns into a project of its own; the Phase-1 shape is a fixed pool plus a clear failure when
+// it is empty.
+//
+// 🔴 Exactly ONE of those cuts came back, and only this far: a connection is checked when it is
+// leased and reconnected at most once (Connection::EnsureAlive). What stays cut is everything in
+// the list above — no backoff, no retry loop, no background health check. The retry is simply the
+// next lease.
+//
+// It came back because the cut version was not "simple", it was broken: one MySQL restart, or
+// wait_timeout expiring on an idle pool, killed every socket in here and then EVERY request failed
+// forever while the process still reported healthy. A fixed pool that never recovers is not a
+// smaller feature, it is a permanent outage waiting for a deploy.
 //
 // 🔴 architecture-design.md §9.1 — this is the ONE place in the layer where a lock is correct.
 // The single-model rule is "concurrency is strands, and session state needs no lock because a
@@ -81,7 +92,10 @@ public:
     // thread count so every waiter is a thread that stopped serving. std::nullopt on timeout is a
     // failure the caller can report; a hang is not.
     //
-    // Expected failure, so nullopt rather than a throw (architecture-design.md §11.2a).
+    // Expected failure, so nullopt rather than a throw (architecture-design.md §11.2a). Two
+    // failures share that one return now: the pool had nothing free within the timeout, or the
+    // connection it did have is dead and could not be re-established. Both are "no connection for
+    // you right now", and the caller's answer to them is the same.
     [[nodiscard]] std::optional<PooledConnection> Acquire(Duration timeout);
 
 private:

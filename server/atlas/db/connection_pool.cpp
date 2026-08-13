@@ -81,7 +81,23 @@ std::optional<PooledConnection> ConnectionPool::Acquire(Duration timeout) {
 
     Connection* connection = free_.front();
     free_.pop_front();
-    return PooledConnection(*this, *connection);
+    lock.unlock();
+
+    // 🔴 Validated OUTSIDE the lock, and that is the whole reason the unlock is here. EnsureAlive
+    // does network I/O (a ping, and on a bad day a full reconnect); doing it while holding mutex_
+    // would block every other thread's Acquire AND Release behind one socket, which is exactly the
+    // "a mutex is for a genuinely shared resource, briefly" justification above stopping being
+    // true. The connection is already off the free list, so no one else can touch it meanwhile.
+    //
+    // The lease is built BEFORE the check so that both exits give the connection back through the
+    // same RAII path — a dead connection returns to the pool and gets its next chance on the next
+    // lease, which is what makes the recovery spread over time instead of looping here.
+    PooledConnection lease(*this, *connection);
+    if (!connection->EnsureAlive()) {
+        ATLAS_LOG_WARN("db connection dead on lease and reconnect failed; reporting unavailable");
+        return std::nullopt;
+    }
+    return {std::move(lease)};
 }
 
 void ConnectionPool::Release(Connection& connection) noexcept {
