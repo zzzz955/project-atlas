@@ -7,14 +7,19 @@
 
 namespace atlas {
 
-std::shared_ptr<Session> Session::Create(IoContext& io_context, Socket socket, SessionId id) {
+std::shared_ptr<Session> Session::Create(IoContext& io_context, Socket socket, SessionId id,
+                                         Duration idle_timeout) {
     // std::make_shared cannot reach a private constructor, and a passkey type to work around that
     // would cost more than the one extra allocation this costs.
-    return std::shared_ptr<Session>(new Session(io_context, std::move(socket), id));
+    return std::shared_ptr<Session>(new Session(io_context, std::move(socket), id, idle_timeout));
 }
 
-Session::Session(IoContext& io_context, Socket socket, SessionId id)
-    : socket_(std::move(socket)), strand_(asio::make_strand(io_context)), id_(id) {
+Session::Session(IoContext& io_context, Socket socket, SessionId id, Duration idle_timeout)
+    : socket_(std::move(socket)),
+      strand_(asio::make_strand(io_context)),
+      id_(id),
+      idle_timer_(io_context),
+      idle_timeout_(idle_timeout) {
     // The ledger travels with the session, so every log line and every exception raised inside a
     // guarded handler already carries the connection it belongs to (architecture-design.md §9.2).
     ctx_.session_id = id;
@@ -28,7 +33,13 @@ void Session::SetCloseHandler(CloseHandler handler) { close_handler_ = std::move
 
 void Session::Start() {
     auto self = shared_from_this();
-    asio::post(strand_, Guarded(ctx_, [self] { self->StartReadOnStrand(); }, MakeFailureHandler()));
+    asio::post(strand_, Guarded(
+                            ctx_,
+                            [self] {
+                                self->ArmIdleTimerOnStrand();
+                                self->StartReadOnStrand();
+                            },
+                            MakeFailureHandler()));
 }
 
 void Session::Send(std::span<const Byte> bytes) {
@@ -84,6 +95,10 @@ void Session::OnReadOnStrand(const ErrorCode& ec, std::size_t bytes_read) {
         return;
     }
 
+    // The peer proved it is there, so the silence counter restarts. Done before the bytes handler
+    // runs: the handler is the owner's code and may take a while, and that time is not silence.
+    ArmIdleTimerOnStrand();
+
     if (bytes_handler_) {
         // 🔴 Raw bytes, exactly as the socket produced them. Nothing here interprets the contents;
         // that belongs to the frame layer of §8, which does not exist yet.
@@ -91,6 +106,47 @@ void Session::OnReadOnStrand(const ErrorCode& ec, std::size_t bytes_read) {
     }
 
     StartReadOnStrand();
+}
+
+void Session::ArmIdleTimerOnStrand() {
+    if (closed_) {
+        return;
+    }
+
+    // `expires_after` cancels the wait already pending on this timer, so re-arming is one call and
+    // never leaves two waits outstanding. The cancelled one arrives at the handler below as
+    // `operation_aborted`.
+    idle_timer_.expires_after(idle_timeout_);
+
+    auto self = shared_from_this();
+    idle_timer_.async_wait(asio::bind_executor(
+        strand_, Guarded(
+                     ctx_, [self](const ErrorCode& ec) { self->OnIdleTimeoutOnStrand(ec); },
+                     MakeFailureHandler())));
+}
+
+void Session::OnIdleTimeoutOnStrand(const ErrorCode& ec) {
+    // Re-arming and Close() both cancel the pending wait. That is a normal outcome, not a failure,
+    // and acceptor.cpp uses the same silent return for the same reason.
+    if (ec == asio::error::operation_aborted) {
+        return;
+    }
+
+    // 🔴 The strand does not make this check redundant. A timer that fires queues its handler with
+    // a success code; if a read completes and re-arms before that queued handler runs, the handler
+    // still reports success and would close a connection that just spoke. The expiry it reads back
+    // is the re-armed one, which is still in the future, so the stale firing is discarded here.
+    if (idle_timer_.expiry() > Clock::now()) {
+        return;
+    }
+
+    if (closed_) {
+        return;
+    }
+
+    // 🔴 Reuses the one close path. A timeout is not a new kind of shutdown, and a second exit
+    // route would be a second thing to keep correct.
+    CloseOnStrand("idle timeout");
 }
 
 void Session::EnqueueOnStrand(std::vector<Byte>&& payload) {
@@ -155,6 +211,10 @@ void Session::CloseOnStrand([[maybe_unused]] std::string_view reason) {
         return;
     }
     closed_ = true;
+
+    // Cancels the pending wait. The handler still runs — with `operation_aborted` — and it holds a
+    // strong reference, so the timer outlives this call exactly the way the socket operations do.
+    idle_timer_.cancel();
 
     // The error_code overloads: shutting down a socket the peer already dropped fails, and that is
     // not something the close path can or should react to.

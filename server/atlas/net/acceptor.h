@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "atlas/core/ctx.h"
+#include "atlas/core/time.h"
 #include "atlas/core/types.h"
 #include "atlas/net/net_types.h"
 #include "atlas/net/session.h"
@@ -27,7 +28,12 @@ public:
 
     // Opens, binds and listens immediately: a port that cannot be taken is a start-up failure, so
     // it throws here rather than reporting an error_code nobody would be positioned to handle.
-    SessionAcceptor(IoContext& io_context, const Endpoint& endpoint, AcceptHandler on_accept);
+    //
+    // `session_idle_timeout` is handed to every session this acceptor creates. It is defaulted
+    // because no server has a reason to override it — the tests do, and that is the whole point of
+    // it being a parameter (Session::kDefaultIdleTimeout says why the value is what it is).
+    SessionAcceptor(IoContext& io_context, const Endpoint& endpoint, AcceptHandler on_accept,
+                    Duration session_idle_timeout = Session::kDefaultIdleTimeout);
 
     SessionAcceptor(const SessionAcceptor&) = delete;
     SessionAcceptor& operator=(const SessionAcceptor&) = delete;
@@ -48,13 +54,26 @@ public:
 private:
     void StartAcceptOnStrand();
     void OnAcceptOnStrand(const ErrorCode& ec, Socket socket);
+    void RetryAcceptOnStrand();
     void CloseOnStrand();
+
+    // 🔴 An accept that fails because the process is out of descriptors (EMFILE/ENFILE) fails again
+    // immediately, so re-arming with no delay turns a resource shortage into a WARN flood at 100%
+    // CPU: the listener is alive and the process is unusable. A short fixed delay is the whole fix.
+    //
+    // 🔴 Deliberately NOT exponential. Growing the delay means carrying backoff state, and that
+    // state is a second state machine in a class whose correctness argument is that it has one.
+    // 100ms bounds the spin at ten attempts per second, which no longer starves anything.
+    static constexpr Duration kAcceptRetryDelay = Millis{100};
 
     IoContext& io_context_;
     Acceptor acceptor_;
     Strand strand_;
+    // Lives on the accept strand like everything else here, so it needs no lock of its own.
+    SteadyTimer retry_timer_;
     Endpoint local_endpoint_;
     AcceptHandler accept_handler_;
+    Duration session_idle_timeout_;
     Ctx ctx_;
     // architecture-design.md §6 — the session tier of the identity ladder. Handed out from the
     // accept strand, so a plain counter is correct here.

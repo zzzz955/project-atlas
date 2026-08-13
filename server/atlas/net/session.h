@@ -11,6 +11,7 @@
 #include "atlas/core/ctx.h"
 #include "atlas/core/error.h"
 #include "atlas/core/ids.h"
+#include "atlas/core/time.h"
 #include "atlas/core/types.h"
 #include "atlas/net/net_types.h"
 
@@ -46,10 +47,24 @@ public:
     // immediate, and leaves the peer with a fact it can act on.
     static constexpr std::size_t kMaxWriteQueueBytes = std::size_t{1024} * 1024;
 
+    // architecture-design.md §9.3 — the idle timeout. A peer that loses power or has its cable
+    // pulled sends no FIN, so TCP does not learn the connection is gone until the server writes to
+    // it; without a timer that session lives forever and its buffers leak. This is the only clock
+    // in this layer, and it counts silence on the READ side.
+    //
+    // 🔴 300s, and the number is a demo constraint, not a guess: `server/console_client` is
+    // interactive, so a human pauses for tens of seconds between commands. A 60s cap would cut the
+    // demo off mid-typing. `loadgen` is closed-loop and can never reach 300s of silence.
+    static constexpr Duration kDefaultIdleTimeout = Seconds{300};
+
     // 🔴 cpp-style.md §4.4 — a session MUST be owned by a shared_ptr, because `shared_from_this()`
     // inside every handler is what keeps it alive while an operation is in flight. The constructor
     // is private so the stack-allocated mistake is a compile error rather than a comment.
-    static std::shared_ptr<Session> Create(IoContext& io_context, Socket socket, SessionId id);
+    //
+    // `idle_timeout` is a parameter rather than a hard-coded constant because testability is a
+    // design constraint here: a test cannot wait 300s, so it passes milliseconds.
+    static std::shared_ptr<Session> Create(IoContext& io_context, Socket socket, SessionId id,
+                                           Duration idle_timeout = kDefaultIdleTimeout);
 
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
@@ -79,11 +94,14 @@ public:
     [[nodiscard]] Strand& GetStrand() noexcept { return strand_; }
 
 private:
-    Session(IoContext& io_context, Socket socket, SessionId id);
+    Session(IoContext& io_context, Socket socket, SessionId id, Duration idle_timeout);
 
     // Everything below runs on the strand.
     void StartReadOnStrand();
     void OnReadOnStrand(const ErrorCode& ec, std::size_t bytes_read);
+    // Arms — or re-arms — the idle timer. Called from Start() and from every completed read.
+    void ArmIdleTimerOnStrand();
+    void OnIdleTimeoutOnStrand(const ErrorCode& ec);
     void EnqueueOnStrand(std::vector<Byte>&& payload);
     void StartWriteOnStrand();
     void OnWriteOnStrand(const ErrorCode& ec);
@@ -101,6 +119,11 @@ private:
     Strand strand_;
     SessionId id_;
     Ctx ctx_;
+
+    // 🔴 Touched only on `strand_`, like every other member — which is what keeps the lock count of
+    // this class at zero even after a timer joined it (§9.1).
+    SteadyTimer idle_timer_;
+    Duration idle_timeout_;
 
     std::array<Byte, kReadBufferSize> read_buffer_{};
 

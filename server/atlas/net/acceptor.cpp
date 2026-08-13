@@ -11,11 +11,13 @@
 namespace atlas {
 
 SessionAcceptor::SessionAcceptor(IoContext& io_context, const Endpoint& endpoint,
-                                 AcceptHandler on_accept)
+                                 AcceptHandler on_accept, Duration session_idle_timeout)
     : io_context_(io_context),
       acceptor_(io_context),
       strand_(asio::make_strand(io_context)),
-      accept_handler_(std::move(on_accept)) {
+      retry_timer_(io_context),
+      accept_handler_(std::move(on_accept)),
+      session_idle_timeout_(session_idle_timeout) {
     acceptor_.open(endpoint.protocol());
     // Without this a restarted server cannot rebind a port still in TIME_WAIT.
     acceptor_.set_option(Acceptor::reuse_address(true));
@@ -60,14 +62,26 @@ void SessionAcceptor::OnAcceptOnStrand(const ErrorCode& ec, Socket socket) {
             return;
         }
         // Everything else is per-connection (a descriptor limit, a peer that vanished during the
-        // handshake) and must not take the listener down with it.
+        // handshake) and must not take the listener down with it. Re-armed after a delay rather
+        // than immediately — see kAcceptRetryDelay for the failure that costs.
         ATLAS_LOG_WARN("accept failed: {}", ec.message());
-        StartAcceptOnStrand();
+        RetryAcceptOnStrand();
         return;
     }
 
+    // 🔴 Nagle batches small writes and this is a latency-sensitive game connection, so it is off
+    // from the first byte. Failure is not fatal — a connection with Nagle on still works, it is
+    // only slower — so this warns and carries on.
+    // The discard is written out for the reason CloseOnStrand states below: the sync overload
+    // reports the failure through both the out-param and the return value.
+    ErrorCode nodelay_ec;
+    std::ignore = socket.set_option(Tcp::no_delay(true), nodelay_ec);
+    if (nodelay_ec) {
+        ATLAS_LOG_WARN("TCP_NODELAY not set: {}", nodelay_ec.message());
+    }
+
     const SessionId id{next_session_id_++};
-    auto session = Session::Create(io_context_, std::move(socket), id);
+    auto session = Session::Create(io_context_, std::move(socket), id, session_idle_timeout_);
     if (accept_handler_) {
         accept_handler_(session);
     }
@@ -79,11 +93,36 @@ void SessionAcceptor::OnAcceptOnStrand(const ErrorCode& ec, Socket socket) {
     StartAcceptOnStrand();
 }
 
+void SessionAcceptor::RetryAcceptOnStrand() {
+    if (closed_) {
+        return;
+    }
+
+    retry_timer_.expires_after(kAcceptRetryDelay);
+    retry_timer_.async_wait(asio::bind_executor(
+        strand_,
+        Guarded(
+            ctx_,
+            [this](const ErrorCode& timer_ec) {
+                // Stop() cancels this wait, and re-arming on it would resurrect the listener — the
+                // same reason OnAcceptOnStrand returns on operation_aborted.
+                if (timer_ec == asio::error::operation_aborted) {
+                    return;
+                }
+                StartAcceptOnStrand();
+            },
+            // The listener has to survive a throw here for the reason StartAcceptOnStrand states.
+            FailureHandler([this](std::string_view) { StartAcceptOnStrand(); }))));
+}
+
 void SessionAcceptor::CloseOnStrand() {
     if (closed_) {
         return;
     }
     closed_ = true;
+
+    // A delayed retry in flight would otherwise re-arm the accept loop after the shutdown.
+    retry_timer_.cancel();
 
     // 🔴 Boost's sync ops report the failure TWICE — through the out-param and through the return
     // value — so passing `ignored` is only half of saying "dropped on purpose". The discard has to

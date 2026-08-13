@@ -100,7 +100,8 @@ protected:
         // still lets the OS pick a free port, so parallel ctest runs cannot collide.
         acceptor_ = std::make_unique<atlas::SessionAcceptor>(
             runner_->Context(), atlas::Endpoint(atlas::asio::ip::address_v4::loopback(), 0),
-            [this](const std::shared_ptr<atlas::Session>& session) { OnAccept(session); });
+            [this](const std::shared_ptr<atlas::Session>& session) { OnAccept(session); },
+            idle_timeout_);
         acceptor_->Start();
         runner_->Start();
     }
@@ -143,6 +144,11 @@ protected:
     }
 
     static constexpr std::size_t kMaxTrackedSessions = 4;
+
+    // The idle timeout handed to every session this fixture accepts. The default keeps the tests
+    // that predate the timer unaffected; the idle fixture below shortens it in its constructor,
+    // which runs before SetUp.
+    atlas::Duration idle_timeout_{atlas::Session::kDefaultIdleTimeout};
 
     // 🔴 Declaration order is the destruction contract: runner_ is destroyed last, after the
     // futures have released the sessions whose sockets live on its io_context.
@@ -254,6 +260,69 @@ TEST_F(NetSessionTest, InFlightHandlerKeepsTheSessionAlive) {
     // And it does go away once the connection does.
     client.Disconnect();
     EXPECT_TRUE(WaitUntil([&] { return closed_count_.load() >= 1; }));
+}
+
+// architecture-design.md §9.3 — the idle timeout. The same stack, with the timeout shortened to
+// something a test can wait for, which is exactly why Session takes it as a parameter.
+class NetSessionIdleTest : public NetSessionTest {
+protected:
+    // 🔴 Not tighter than this on purpose: the re-arm test below has to write repeatedly INSIDE one
+    // timeout window, so a value near the scheduler's noise floor would fail on a busy machine and
+    // say nothing about the code.
+    static constexpr atlas::Duration kIdleTimeout = atlas::Millis{500};
+
+    NetSessionIdleTest() { idle_timeout_ = kIdleTimeout; }
+};
+
+// 🔴 The failure this exists for: a peer that loses power sends no FIN, so nothing else in this
+// layer will ever close that session. Without the timer the symptom is a server that reports no
+// errors and quietly runs out of slots.
+TEST_F(NetSessionIdleTest, SilentSessionIsClosedByTheIdleTimer) {
+    TestClient client(acceptor_->LocalEndpoint());
+    ASSERT_NE(TakeSession(0), nullptr);
+
+    // Not one byte is sent, and the client never disconnects: the timer is the only thing that can
+    // close this connection.
+    EXPECT_TRUE(WaitUntil([&] { return closed_count_.load() >= 1; }));
+}
+
+// The regression line for the re-arm. A session that keeps speaking must never be closed, or the
+// timeout stops being an idle timeout and becomes a connection lifetime cap.
+TEST_F(NetSessionIdleTest, TrafficReArmsTheIdleTimer) {
+    TestClient client(acceptor_->LocalEndpoint());
+    ASSERT_NE(TakeSession(0), nullptr);
+
+    const std::vector<Byte> payload = MakeBytes("tick");
+    // Six gaps of ~100ms span more than the 500ms timeout, so a timer that never re-armed would
+    // have fired well before the loop ends.
+    constexpr atlas::UInt32 kRounds = 6;
+    for (atlas::UInt32 round = 0; round < kRounds; ++round) {
+        std::this_thread::sleep_for(atlas::Millis{100});
+        client.Write(payload);
+        ASSERT_EQ(client.Read(payload.size()), payload);
+    }
+
+    EXPECT_EQ(closed_count_.load(), atlas::UInt32{0});
+}
+
+// The timer holds a strong reference, so its handler runs even after the session is closed. It has
+// to be a no-op there: a second close would notify the owner twice, and a throw would log an ERROR
+// on a perfectly normal shutdown.
+TEST_F(NetSessionIdleTest, ClosedSessionIsNotDisturbedByTheTimer) {
+    TestClient client(acceptor_->LocalEndpoint());
+    const std::shared_ptr<atlas::Session> session = TakeSession(0);
+    ASSERT_NE(session, nullptr);
+
+    const atlas::UInt64 errors_before = atlas::LogCount(atlas::LogLevel::Error);
+
+    session->Close();
+    ASSERT_TRUE(WaitUntil([&] { return closed_count_.load() >= 1; }));
+
+    // Past the point the timer would have expired had Close() not cancelled it.
+    std::this_thread::sleep_for(kIdleTimeout + atlas::Millis{300});
+
+    EXPECT_EQ(closed_count_.load(), atlas::UInt32{1});
+    EXPECT_EQ(atlas::LogCount(atlas::LogLevel::Error), errors_before);
 }
 
 TEST(NetIoRunner, GracefulStopDrainsTheQueueAndIsIdempotent) {
