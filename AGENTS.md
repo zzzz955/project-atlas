@@ -113,6 +113,7 @@ only: the VS generator emits no `compile_commands.json` and clang-tidy needs it.
 | `cmake --build --preset windows-ci` | unity OFF — missing-include / ODR gate |
 | `ctest --preset windows-ci --output-on-failure` | tests (GoogleTest via `gtest_discover_tests`) |
 | `powershell -NoProfile -File server\scripts\ci-gate.ps1` | **the full gate.** `-WhatIf` prints the plan |
+| `powershell -NoProfile -File server\scripts\tidy-prefilter.ps1` | local clang-tidy **pre-filter**, not a gate (always exits 0). `-Filter <substr>` for one TU |
 
 Configure before building a fresh tree: `cmake --preset windows-debug` / `cmake --preset windows-ci`
 (run from `server/`; `setup.bat` already does the `windows-debug` one).
@@ -140,11 +141,13 @@ without a run id; it has been wrong twice.
 DB/Redis suite, because CI has no MySQL service. The DB axis is proven only by a local `ci-gate.ps1`
 run against a reachable database (skip promoted to failure). **Quote both or neither.** `AD §15.5i`.
 `ci-gate.ps1` is still the local gate and is **not** equivalent: it skips `clang-tidy` (MSVC PCH),
-so naming / `bugprone` / `modernize` violations only surface in CI. `AD §15.5c`. A local
-clang-tidy sweep **is** possible off a PCH-stripped copy of `compile_commands.json` and is a useful
-pre-filter, but 🔴 it is deliberately not the gate: MSVC's STL never reports `operator*` for
-`bugprone-unchecked-optional-access` while CI's libstdc++ does, so a clean local sweep is not
-evidence. `AD §15.5i` · `CS §7.3`.
+so naming / `bugprone` / `modernize` violations only surface in CI. `AD §15.5c`. The local
+sweep is `server\scripts\tidy-prefilter.ps1` (PCH-stripped **copy** of `compile_commands.json`;
+48 TU / 18 min, `-Filter <substr>` for one file) and is a useful pre-filter, but 🔴 it is
+deliberately not the gate — **it always exits 0**. The two toolchains diverge **both ways**: MSVC's
+STL never reports `operator*` for `bugprone-unchecked-optional-access` while CI's libstdc++ does,
+and CI never compiles the `#if defined(_WIN32)` branches this sweep is the only thing to grade.
+Neither is evidence for the other. `AD §15.5i` · `CS §7.3`.
 🔴 **`format-check` runs in both and can still disagree** — the local `clang-format` ships with VS
 (19.1.5), CI's comes from `apt.llvm.org`; the 18.1.3 CI was really running measured `ColumnLimit` in
 bytes, so a comment holding `§` or `—` passed locally and failed in CI. A green local gate is never

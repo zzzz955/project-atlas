@@ -325,9 +325,15 @@ error: input is not a PCH file: '.../cmake_pch.cxx.pch'
   clang이 만든 compile db와 clang이 읽을 수 있는 PCH를 쓰므로 그대로 성립한다.
   `server/scripts/ci-gate.ps1`은 이 단계를 **사유를 출력하고** 건너뛴다 — 조용한 스킵은 게이트가
   죽은 것을 감춘다.
-- **대가(감수한다)**: git remote가 붙기 전까지 §7.1의 네이밍 · `bugprone-*` · `modernize-*` 강제가
-  로컬에서 돌지 않는다. 로컬에 남는 기계 강제는 `.clang-format`(층 1) + §7.2 경고 옵션 + unity
-  ON/OFF 두 빌드다.
+- **대가(감수한다)**: §7.1의 네이밍 · `bugprone-*` · `modernize-*` 강제는 로컬 게이트에서 돌지
+  않는다. 로컬 게이트에 남는 기계 강제는 `.clang-format`(층 1) + §7.2 경고 옵션 + unity ON/OFF
+  두 빌드다.
+- **사전 필터는 있다, 그러나 게이트가 아니다** (2026-08-13): `server\scripts\tidy-prefilter.ps1`
+  이 `compile_commands.json` **사본**에서 PCH 플래그만 벗겨 로컬 clang-tidy 를 돌린다(48 TU ·
+  18분, `-Filter` 로 파일 단위). 🔴 **항상 exit 0** 이다 — 게이트가 아니라는 것을 종료 코드로도
+  말한다. 🔴 두 툴체인의 발산은 **양방향**이다: MSVC STL 은 `bugprone-unchecked-optional-access`
+  를 아예 보고하지 않고(CI 만 보는 축), 반대로 `#if defined(_WIN32)` 분기는 리눅스 CI 가 컴파일
+  조차 하지 않는다(로컬만 보는 축). 근거와 실측은 설계 문서 §15.5i.
 - **해소 조건**: 로컬에 clang-cl 도입. clang-cl 프리셋은 clang이 읽는 PCH를 만들므로 그 시점에
   이 단계를 `ci-gate.ps1`으로 되돌린다.
 
