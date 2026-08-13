@@ -444,6 +444,22 @@ private:
     // namesake in the core (session_framing.h says why): one send counter per connection, and the
     // layer that decides what to send is the layer that keeps it.
     void SendFrame(UInt16 opcode) {
+        // 🔴 THE PING-PONG KEEPS ONE REQUEST IN FLIGHT, NOT ONE WRITE, AND THOSE ARE NOT THE SAME
+        // THING. `async_write` re-validates its buffer sequence inside its own completion, so
+        // `wire_` may not be rewritten while that completion is still outstanding. Below the DB
+        // queue cap the server takes hundreds of milliseconds to answer and the write completion
+        // always wins the race, which is why this held for every table in §16.1c. Past the cap the
+        // server answers a rejection in MICROSECONDS (§16.1i), and then the read completion can
+        // reach this strand first — the next request would rewrite a buffer a live write is still
+        // reading. Measured 2026-08-14: MSVC's debug iterators catch exactly that as
+        // `can't dereference invalidated vector iterator` and the process dies with
+        // STATUS_BREAKPOINT mid-run. atlas/net/session.cpp never had this bug because it keeps the
+        // payload queued until its write completes; this is that same rule, at this layer's size.
+        if (write_in_flight_) {
+            deferred_opcode_ = opcode;
+            return;
+        }
+
         ++send_seq_;
         wire_.clear();
         if (!atlas::EncodeFrame(wire_, opcode, send_seq_, payload_)) {
@@ -451,16 +467,26 @@ private:
             return;
         }
 
-        // Safe to hold `wire_` across the write: the ping-pong keeps exactly one request in flight.
         sent_at_ = atlas::Clock::now();
+        write_in_flight_ = true;
         auto self = shared_from_this();
         atlas::asio::async_write(
             socket_, atlas::asio::buffer(wire_),
             atlas::asio::bind_executor(
                 strand_,
                 atlas::Guarded(atlas::Ctx{}, [self](const atlas::ErrorCode& error, std::size_t) {
+                    self->write_in_flight_ = false;
                     if (error && !self->closed_) {
                         self->OnTransportError();
+                        return;
+                    }
+                    // A request that arrived during the window above waited for exactly this
+                    // moment; `payload_` still holds its body because nothing else may write there
+                    // until this connection has sent again.
+                    if (self->deferred_opcode_.has_value() && !self->closed_) {
+                        const UInt16 opcode = *self->deferred_opcode_;
+                        self->deferred_opcode_.reset();
+                        self->SendFrame(opcode);
                     }
                 })));
     }
@@ -598,6 +624,10 @@ private:
     std::array<Byte, kReadBufferSize> read_buffer_{};
     std::vector<Byte> payload_;
     std::vector<Byte> wire_;
+    // 🔴 `wire_` is owned by an outstanding write while this is true — see SendFrame.
+    bool write_in_flight_{false};
+    // The one request the window above made wait, if any.
+    std::optional<UInt16> deferred_opcode_;
 
     std::array<UInt64, 2> item_uids_{};
     std::size_t next_item_{0};

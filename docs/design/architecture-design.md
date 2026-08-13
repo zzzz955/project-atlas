@@ -1501,6 +1501,12 @@ runtime 이 아니었다 — `docker compose build server` 는 9 MB 짜리 빈 �
 - `compose.yaml` 의 `server.build.args` 가 두 값을 `${VAR:-unknown}` 으로 받는다. 🔴 **`.env` 에
   넣지 않는다**(§5.4) — 자격증명도 스택 설정도 아니고 빌드마다 달라지는 값이라, 파일에 적는 순간
   어제 값이 굳는다. 셸에서 준다: `$env:ATLAS_GIT_SHA = (git rev-parse --short HEAD)`.
+  🔴 **타임스탬프는 `(Get-Date).ToUniversalTime().ToString('s') + 'Z'` 로 쓴다 (2026-08-14 실측).**
+  `compose.yaml` 주석이 안내하던 `Get-Date -AsUTC` 는 **PowerShell 7 전용**이고, 이 레포의 셸인
+  Windows PowerShell 5.1 에서는 파라미터 바인딩 에러를 내며 변수가 **빈 문자열**로 남는다.
+  `${VAR:-unknown}` 은 *미설정*만 대체하므로 빈 값은 그대로 통과하고, 결과는 `revision` 은 채워진 채
+  `built=` 만 비는 이미지다 — 즉 위의 "빠진 사실이 조용히 묻히지 않는다"가 이 한 축에서만 깨져
+  있었다. 주석은 5.1·7 양쪽에서 도는 형태로 고쳤다.
 - 미설정을 `:?` 에러로 만들지 않은 이유는 기동을 막을 이유가 없고 **빠진 사실이 조용히 묻히지도
   않기** 때문이다: entrypoint 가 다른 일을 하기 전에 `/app/VERSION` 을 찍으므로 부팅 로그 첫 줄이
   `revision=unknown` 이 된다.
@@ -2184,6 +2190,39 @@ CI 채점 범위(`atlas`·`game`·`loadgen`·`console_client`·`tests`)의 잔�
 같은 푸시에 섞지 않는다**: 기능 변경과 CI 개편이 한 푸시에 들어가면 CI 가 붉을 때 원인 후보가
 둘이 되고, 그 둘을 가르는 비용이 샤딩으로 아끼는 시간보다 크다. **별건으로 다룬다** — 이 줄이
 그 판정의 기록이고, 판정 시점은 "슬라이스 3 이 초록으로 착지한 뒤 첫 CI 전용 변경"이다.
+
+🔴 **사전 필터가 남긴 9줄의 판정 (2026-08-14).** `tidy-prefilter.ps1` 이 레포 소스에 대해 내는
+지적은 두 무리이고, **둘의 성격이 다르다.**
+
+**① `atlas/core/crash.cpp` 3건 — 고쳤다. 🔴 여기서 안 고치면 아무도 안 고친다.** 이 파일의 해당
+코드는 `#if defined(_WIN32)` 분기 안이라 리눅스 CI 가 **컴파일조차 하지 않는다** — §15.5i 가 적은
+"로컬만 보는 축"의 실물이다. `modernize-avoid-c-arrays`(`wchar_t[256]` → `std::array`) ·
+`modernize-use-auto`(캐스트 초기화, §15.5i-표의 8건과 같은 처리)는 코드를 고쳤고,
+`clang-analyzer-optin.core.EnumCastOutOfRange` 는 **오탐으로 판정**했다: `MINIDUMP_TYPE` 은 플래그
+enum 이고 OR 조합이 `MiniDumpWriteDump` 의 호출 계약이라 열거자가 아닌 값이 나오는 것이 정상이다.
+분석기는 플래그 enum 을 구분하지 못한다 — §15.5h 가 테스트 트리의 범위 밖 enum 캐스트에 내린 판정과
+같은 것이라 같은 처리(억제 + 사유, 마커는 코드 바로 앞 한 줄)를 했다. 실측: 3건 → **0건**.
+
+**② `bugprone-exception-escape` 6건 — 1건 고치고 5건은 "실제로 던질 수 있으나 결함이 아니다"로
+판정.** 🔴 **CI 가 조용한 것은 오탐의 증거가 아니었다**(run 31690911513 이 `--warnings-as-errors='*'`
+로 초록). 각 건을 읽은 결과는 두 종류로 갈린다.
+
+| 위치 | 무엇이 던질 수 있는가 | 판정 |
+|---|---|---|
+| `net/io_runner.cpp` `~IoRunner` | `JoinWorkers()` → `std::thread::join` 이 `std::system_error` 를 던진다. 소멸자는 noexcept 이므로 곧장 `std::terminate` | 🔴 **결함 — 고쳤다.** 새는 스레드를 신고하려다 프로세스를 죽이는 것은 더 나쁜 결과다. `RedisConnection::Stop` 이 이미 쓰는 `try{...}catch(...){}` 와 같은 형태. 실측 1건 → **0건** |
+| `db/connection_pool.cpp` `Release` (noexcept) | `free_.push_back` 의 할당 → `std::bad_alloc` | **의도된 noexcept.** 반납 경로는 RAII 소멸 경로에서 불리고, 여기서의 할당 실패는 회복 지점이 없다 — `noexcept` 가 그 선택을 문서화한다 |
+| `game/handlers.cpp` `Stop` (noexcept) | `live.reserve` / `push_back` 의 할당 → `std::bad_alloc` | 위와 같다. 종료 경로의 OOM 에 복구 계획을 만들지 않는다 |
+| `core/error.h` `Guarded` · `config/ini_document.h` `IniDocument` · `redis/redis_runner.cpp:24` 의 람다 | 진단이 **타입 이름**을 부른다 = 암시적 특수 멤버(이동 생성자)다. 멤버가 `std::function` · `std::map` 이고 **MSVC STL 에서는 그 이동이 noexcept 가 아니다**(libstdc++ 에서는 맞다 — CI 가 조용한 이유가 정확히 이것이다) | **툴체인 발산이지 결함이 아니다.** 🔴 특히 `Guarded` 는 §11.2(b) 만다트와 **무관하다**: 지적 대상은 객체를 **옮기는 것**이지 **호출하는 것**이 아니며, `Guarded::operator()` 는 여전히 `noexcept` 이고 여전히 전부 잡는다 |
+
+🔴 **이 판정이 §15.5i 의 "발산은 양방향" 주장에 더하는 것**: 지금까지 그 양방향은 *체크가 발화하느냐*
+의 문제였는데, 여기서는 **같은 체크가 같은 코드에 대해 두 STL 에서 다르게 답한다.** 그러므로 이 6건은
+"CI 가 못 보는 부채"가 아니라 **플랫폼 사실**이며, 5건을 억제하지 않고 남겨 두는 것이 옳다 —
+억제하면 다음에 진짜로 던지는 것이 생겼을 때 그 자리가 이미 꺼져 있다.
+
+**로컬 게이트 재확인**: `ci-gate.ps1` **PASS** (`140/140`, skip 0, DB 도달 가능). 🔴 ① 을 고치면
+로컬 게이트가 유일한 검증이라는 전제 그대로다. 이 과정에서 게이트가 두 번 붉었고 둘 다 게이트가
+옳았다 — `core-purity` 는 새로 쓴 주석이 테스트 파일명을 인용하며 데모게임 어휘를 코어에 들여온
+것을 잡았고(§15.4 규칙 2), `format-check` 는 그 주석 옆의 인자 줄바꿈을 잡았다.
 
 ---
 
@@ -3097,6 +3136,9 @@ server\build\windows-ci\loadgen\atlas_loadgen.exe --ramp 32,64,128,192,256 --sta
 docker logs project-atlas-server-1 --tail 8000 | Select-String 'counters sessions='
 
 # 5. 그림 — 서버 카운터를 같은 페이지에 실어 클라이언트 집계와 나란히 놓는다
+#    🔴 Windows PowerShell 에서는 `npm run` 을 거치지 않는다 — `npm.ps1` 이 `--` 를 삼켜 `--in` 이
+#    사라진다 (2026-08-14 실측, tools/loadreport/AGENTS.md). 아래 줄은 이 런이 쓴 형태 그대로 두고,
+#    지금 재현한다면 `node tools\loadreport\loadreport.js --in ...` 이다.
 npm run loadreport -- --in reports\ramp-1.jsonl --note "서버측 = db_rejected 676875, cap 128" `
     --note "fsync 프로브 = 4.145 -> 4.070 ms (정착 레짐)"
 ```
@@ -3110,8 +3152,8 @@ npm run loadreport -- --in reports\ramp-1.jsonl --note "서버측 = db_rejected 
 **부수 관측 — 긴 런의 크래시가 재현되지 않았다.** 이전 세션이 40초 · 60초 런의 **종료 시점**에서
 boost.redis `Pong timeout` 뒤 `STATUS_BREAKPOINT` 를 관측한 바 있어 이 절의 100초 램프가 그
 리스크 위에 있었다. **이 세션의 17런(그중 100초 런 5회, 45초 런 9회)에서 한 번도 재현되지 않았고
-전부 `exit=0`** 이다. 🔴 **재현되지 않았다는 것이 없다는 뜻은 아니다** — 원인을 특정하지 못했으므로
-리스크는 열려 있고, JSONL 이 레코드마다 flush 되는 것(§16.1a)이 그 상황에서도 시계열은 남는다는
+전부 `exit=0`** 이다. 🔴 **재현되지 않았다는 것이 없다는 뜻은 아니다** — 이 시점에는 원인을 특정하지
+못해 리스크가 열려 있었고(**닫혔다: §16.1j**), JSONL 이 레코드마다 flush 되는 것(§16.1a)이 그 상황에서도 시계열은 남는다는
 유일한 보험이다. 다만 **최종 백분위는 표준출력에만 있으므로 프로세스가 죽으면 그 런은 잃는다.**
 
 🔴 **그리고 같은 날 재현됐다 (2026-08-13, 위 표를 독립 재측정하던 런).** 위 17런과 다른 점은
@@ -3122,9 +3164,93 @@ boost.redis `Pong timeout` 뒤 `STATUS_BREAKPOINT` 를 관측한 바 있어 이 
 좁다 — 종료와 무관하게 죽는다. 위 문단의 보험은 실제로 작동했다: JSONL 은 t=72.012 까지
 남았고 그 시계열로 3단계까지의 거부율·지연을 그대로 읽을 수 있었다. 반면 최종 백분위는 잃었다.
 🔴 **표의 수치는 이 사건과 무관하다** — 표를 만든 4런은 전부 `exit=0` 이고, 이 크래시 런은
-애초에 프라이밍 없는 유휴 시작이라 §16.1c-① 기준 폐기 대상이었다. 원인은 여전히 미특정이며,
+애초에 프라이밍 없는 유휴 시작이라 §16.1c-① 기준 폐기 대상이었다. ~~원인은 여전히 미특정이며,
 `boost.redis` 의 pong 타임아웃 경로가 하네스 종료와 겹칠 때만이 아니라 **부하 중에도** 밟힌다는
-것이 이 데이터포인트가 더하는 사실이다.
+것이 이 데이터포인트가 더하는 사실이다.~~ **원인 특정됨 — 아래 §16.1j.**
+
+#### 16.1j 그 크래시의 원인 — 🔴 **서버가 아니라 하네스였다** (2026-08-14)
+
+**결론 먼저.** 죽은 것은 **부하 클라이언트 프로세스**이고, 원인은 `boost.redis` 가 아니라
+`server/loadgen/load_client.cpp` 의 송신 버퍼 재사용이다. 🔴 **서버 코어에는 이 결함이 없다**
+— `atlas/net/session.cpp` 는 같은 문제를 `write_queue_` 로 이미 막고 있었고(`front()` 를 쓰고
+완료 뒤에야 `pop_front()`), 하네스만 그 규칙을 생략했다.
+
+**Pong timeout 은 원인이 아니라 동행 증상이다.** `redis: ... Pong timeout` 을 찍는
+`connection.cpp:34`(`ForwardRedisLog`)는 **서버와 하네스 양쪽이 링크하는** 코어 코드이고, 하네스는
+시딩·정리용 `RedisConnection` 을 런 내내 살려 둔다(`loadgen/main.cpp`). 거부 레짐에서 그 유휴
+커넥션의 헬스체크가 늦어지면 같은 줄이 나오지만, 크래시와 인과가 없다.
+
+**무엇이 그 종료 코드를 만들었는가.** `0x80000003` 은 NTSTATUS `STATUS_BREAKPOINT` 이며 리눅스
+컨테이너가 낼 수 있는 값이 아니다 — 애초에 **Windows 프로세스만** 이 코드를 낼 수 있었다. `cdb`
+아래에서 잡은 실체는 MSVC 디버그 CRT 의 어서션이다:
+
+```
+Debug Assertion Failed!   File: <MSVC>\include\vector   Line: 54
+Expression: can't dereference invalidated vector iterator
+→ ucrtbased!VCrtDbgReportA+0x192:  int 3      (= 0x80000003)
+```
+
+전체 스택(`cdb -pv`, 전 스레드):
+
+```
+boost::asio::detail::win_iocp_socket_send_op<const_buffer,
+    write_op<..., LoadConnection::SendFrame'::<lambda_1>, strand>>::do_complete
+  → buffer_sequence_adapter<const_buffer,const_buffer>::validate
+  → boost::asio::const_buffer::data
+  → boost::asio::detail::buffer_debug_check<std::vector<std::byte>::iterator>::operator()
+  → std::_Vector_iterator<...std::byte>::operator*     ← 여기서 터진다
+```
+
+🔴 **`_ITERATOR_DEBUG_LEVEL != 0` 이면 Boost.Asio 는 버퍼 디버깅을 자동으로 켠다.** 그래서
+`async_write` 는 **자기 완료 시점에 버퍼 시퀀스를 다시 검증**하고, 그 사이에 버퍼가 재할당됐으면
+무효 이터레이터를 역참조한다.
+
+**깨진 불변식은 코드에 주석으로 적혀 있었다** (`load_client.cpp`, 수정 전):
+
+```
+// Safe to hold `wire_` across the write: the ping-pong keeps exactly one request in flight.
+```
+
+🔴 **핑퐁이 보장하는 것은 "요청 1건"이지 "쓰기 1건"이 아니다.** 상한 아래에서는 서버가 수백
+ms 뒤에 답하므로 쓰기 완료가 항상 먼저 스트랜드에 오고, 그래서 이 가정이 §16.1c 의 모든 표를
+버텨냈다. **상한을 넘기면 서버가 거부를 마이크로초로 답한다** — 그때 읽기 완료가 쓰기 완료보다
+먼저 도착할 수 있고, 다음 요청이 **아직 살아 있는 write 가 읽고 있는 `wire_` 를 `clear()` 하고
+다시 인코딩한다.** 즉 이 결함은 **거부 경로가 생기기 전에는 존재할 수 없었다**: 부하 차단(§10.8)이
+착지하면서 처음 도달 가능해진 상태이고, 그래서 3단계(192커넥션) 한복판에서만 나온다.
+
+**"행(hang)"과 "크래시"는 같은 결함의 두 얼굴이다.** 디버그 CRT 어서션은 `_CrtDbgReport` 로 가고,
+그것이 메시지 박스를 띄우면 프로세스는 **영원히 멈추고**(JSONL 은 계속 쌓인다 — 실측 t=507 s),
+박스가 없으면 `_CrtDbgBreak()` → `int 3` → `0x80000003` 이다. §16.1i 가 "종료 시점" 과
+"부하 중" 두 형태로 본 것, 그리고 이 조사에서 본 5건의 무한 런은 전부 이 하나다.
+
+**격리 실측 (2026-08-14, 조건은 §16.1i 와 동일 · `windows-debug` 램프 100초)**
+
+| 실험 | 런 | 결과 |
+|---|---:|---|
+| 수정 전 · Redis ON | 16 | `0x80000003` 3건 · 무한 행 5건 · 정상 8건 |
+| 수정 전 · `ATLAS_REDIS_HOST=""` | 3 | 크래시 0건 · **행 3건** → 🔴 **Redis 축은 기각된다**(같은 실패가 Redis 없이도 난다) |
+| **수정 후** · Redis ON | **6** | **6/6 `exit=0`, `last_t≈101 s` 로 전 단계 완주** |
+
+🔴 **서버는 전 구간 무사했다** — `docker inspect` 로 `running · RestartCount=0 · OOMKilled=false`,
+`sessions=0` 으로 정상 배수, 크래시 런 직후 `atlas_console` 로 `load`·`equip`·`rank` 전부 응답.
+**크래시가 서버 쪽 사건이었던 적이 없다.**
+
+**수정** — 코어가 이미 지키던 규칙을 이 층의 크기로 옮긴 것뿐이다: `write_in_flight_` 인 동안에는
+`wire_` 를 건드리지 않고, 그 창에 들어온 요청 1건을 `deferred_opcode_` 로 미뤄 쓰기 완료 핸들러가
+보낸다. 큐도 할당도 추가하지 않는다.
+
+🔴 **수치에 대해 주장하는 것과 하지 않는 것.** 정성적 결론은 그대로다(수정 후 실측: 3단계에서
+거부 개시, 거부율 99.17 % / 99.45 %, 수락 p50 이 `큐 상한 ÷ 처리량` 에 고정). 🔴 **정량 before/after
+비교는 하지 않는다** — 이 6런에 fsync 프로브를 붙이지 않았고, §16.1d 가 "프로브 없는 before/after 는
+개선인지 디스크 기분인지 구분할 수 없다"고 못 박은 그대로다. 위 표들을 다시 잰 것이 아니다.
+
+🔴 **남은 부채 하나: 하네스에는 크래시 진단이 없다.** `LogInit` 은 `config.directory` 가 비어
+있지 않을 때만 `CrashDiagnosticsInit` 을 부르는데(`core/log.cpp`), `loadgen` 과 `console_client` 는
+콘솔 전용이라 그 값이 비어 있다 — §11.1a 가 만든 `.dmp` · SEH 필터 · build-id 가 **이 두 바이너리
+에는 붙지 않는다.** 이번 조사가 `cdb` 를 직접 붙여야 했던 이유가 그것이고, 그래서 이전 세션은
+종료 코드 하나만 들고 있었다. 고치지 않은 이유는 §16.1a 의 절단선이다(측정 중 로그 파일 writer 를
+하나 더 만들지 않는다). **선택지는 "디렉터리 없이도 크래시 핸들러만 설치할 수 있게 하는 것"이며,
+그것은 코어 API 변경이라 이 노드 밖이다.**
 
 ---
 
