@@ -1480,6 +1480,18 @@ stripped binary만 받고, Docker `symbols` stage가 DWARF와 `VERSION`을 build
 내보낸다. image revision과 다른 stage의 심볼을 섞으면 파일:라인이 그럴듯하게 틀릴 수 있으므로
 그 결과는 폐기한다. core 자체도 메모리의 시크릿을 담을 수 있어 image registry에 넣지 않는다.
 
+🔴 **그래서 `compose.yaml` 의 `server.build` 는 `target: runtime` 을 반드시 명시한다 (2026-08-13).**
+`target:` 이 없으면 compose 는 Dockerfile 의 **마지막 스테이지**를 굽는다. 스테이지는 이제
+`builder → runtime → symbols` 세 개이고, 위의 심볼 분리가 `symbols` 를 뒤에 붙인 순간부터 그 마지막은
+runtime 이 아니었다 — `docker compose build server` 는 9 MB 짜리 빈 이미지를 만들고 `up -d` 는
+`no command specified` 로 죽었다(2026-08-13 발견 · 같은 날 수정, §16.1i). 🔴 **스테이지를 뒤에
+추가하는 변경은 그 자체로 compose 의 기본 빌드 대상을 바꾼다** — Dockerfile 만 보면 안전해 보이는
+추가가 배포 경로를 끊는 형태이고, `target:` 한 줄이 그 결합을 끊는다.
+**수정 후 실측 (2026-08-13)**: `docker compose --env-file server/.env --profile app build server` →
+이미지 37 MB · `ENTRYPOINT [/app/entrypoint.sh]`, `up -d --force-recreate server` →
+`RestartCount=0` · `db runner started: 2 threads, queue cap 128` · `GAME listening on 0.0.0.0:7777`,
+`atlas_console` 로 `load` → `inv` → `equip`(슬롯 교체까지) → `rank` 가 전부 응답했다.
+
 🔴 **부하 하네스는 빌더 스테이지에서만 빌드되고 런타임 스테이지로 복사되지 않는다 (2026-08-10,
 §16.1).** 빌더가 `COPY loadgen` 을 하는 이유는 루트 `CMakeLists.txt` 가 그 디렉터리를 잡기
 때문이고(없으면 configure 실패), 런타임에 넣지 않는 이유는 테스트 바이너리를 넣지 않는 것과 같다 —
@@ -2825,7 +2837,7 @@ npm run loadreport -- --in run.jsonl --out run.html --note "cell = cache ON" --n
 |---|---|
 | 날짜 | 2026-08-13. CPU · 호스트 OS · MySQL 설정 · 잡음(무관 컨테이너 idle)은 §16.1b 와 **동일** |
 | 🔴 **이미지를 다시 구웠다** | 디스크의 `project-atlas-server:latest` 는 **2026-08-12 빌드**로 §10.8 의 큐 상한보다 앞섰다. 그대로 썼으면 거부가 **한 건도 나지 않고** 이 절 전체가 "상한을 넘겨도 아무 일이 없다"로 잘못 닫혔을 것이다. 재빌드 확인은 기동 로그 `db runner started: 2 threads, queue cap 128` 한 줄이다 |
-| 🔴 **`docker compose build server` 로는 안 된다** | 아래 "발견했지만 고치지 않은 것" 참조. `docker build --target runtime` 을 직접 썼다 |
+| 🔴 **`docker compose build server` 로는 안 됐다** | 이 측정 시점의 `compose.yaml` 에는 `target:` 이 없었다(아래 "발견했지만 고치지 않은 것" 1번). 그래서 이 절은 `docker build --target runtime` 을 직접 썼다. 🔴 **결함은 2026-08-13 에 수정됐지만 이 행은 그대로 둔다** — 어떤 이미지로 쟀는지는 측정의 조건이고, 나중의 수정으로 소급되지 않는다 |
 | 서버 런타임 설정 | `io_workers=16` · `db_threads=2` · `db_pool_size=4` · **DB 큐 상한 128**(= `db_threads × 64`, §10.8) |
 | **부하 클라이언트** | §16.1b 그대로 — 같은 호스트에서 네이티브 Windows 실행, 🔴 **`windows-ci` 프리셋 = Debug · 비최적화 빌드**, `--io-threads 8` |
 | 램프 인자 | `--ramp 32,64,128,192,256 --stage-seconds 20 --warmup 6` → 단계별 안정구간 14초, 런 100초 |
@@ -3002,14 +3014,15 @@ Nagle 켜짐이므로 `--no-delay 0` 은 그 기본과 같은 상태이고, 그�
 
 ##### 🔴 발견했지만 고치지 않은 것 (측정 노드는 고치지 않는다)
 
-1. 🔴 **`docker compose --profile app build server` 가 잘못된 스테이지를 굽는다.** `compose.yaml`
-   의 `server.build` 에 `target:` 이 없어서 Dockerfile 의 **마지막 스테이지**가 선택되는데, §11.1a
-   가 심볼 반출용으로 `FROM scratch AS symbols` 를 뒤에 붙인 뒤로 그 마지막은 **runtime 이
-   아니다.** 결과는 9 MB 짜리 빈 이미지이고 `up -d` 가 `no command specified` 로 죽는다 —
-   🔴 **조용히 옛 이미지를 쓰는 것이 아니라 요란하게 죽으므로 이 결함은 수치를 오염시키지
-   않았다.** 이 절은 `docker build --target runtime -t project-atlas-server:latest -f
-   server/Dockerfile server` 로 우회했다. 고치는 자리는 `compose.yaml` 한 줄(`target: runtime`)
-   이고, §15.3 의 "새 소스 트리는 세 곳을 건드린다"와 같은 부류의 누락이다.
+1. ~~🔴 **`docker compose --profile app build server` 가 잘못된 스테이지를 굽는다.**~~
+   **해소 (2026-08-13, 측정 노드 밖에서).** `compose.yaml` 의 `server.build` 에 `target:` 이 없어서
+   Dockerfile 의 **마지막 스테이지**가 선택됐는데, §11.1a 가 심볼 반출용으로 `FROM scratch AS
+   symbols` 를 뒤에 붙인 뒤로 그 마지막은 **runtime 이 아니었다.** 결과는 9 MB 짜리 빈 이미지이고
+   `up -d` 가 `no command specified` 로 죽었다 — 🔴 **조용히 옛 이미지를 쓰는 것이 아니라 요란하게
+   죽으므로 이 결함은 이 절의 수치를 오염시키지 않았다.** 이 절은 `docker build --target runtime -t
+   project-atlas-server:latest -f server/Dockerfile server` 로 우회해서 쟀고, 그 조건은 위 조건표에
+   그대로 남는다. 수정은 예고한 대로 `compose.yaml` 한 줄(`target: runtime`)이고, 근거와 수정 후
+   실측(37 MB 이미지 · `queue cap 128` · 콘솔 데모 경로)은 **§15.3** 에 있다.
 2. **하네스의 거부 재시도에 백오프가 없다.** 위 "측정하지 못한 것"에 적은 대로 **의도된 부재**
    이지만, 이 하네스로 다른 것을 재려는 사람에게는 함정이다 — 거부가 시작되는 순간 이 클라이언트는
    초당 2만 건을 던지는 부하 발생기로 성격이 바뀐다.
@@ -3018,7 +3031,9 @@ Nagle 켜짐이므로 `--no-delay 0` 은 그 기본과 같은 상태이고, 그�
 
 ```powershell
 # 0. 🔴 이미지부터. 큐 상한(§10.8)보다 오래된 이미지는 이 절 전체를 조용히 무효화한다.
-#    🔴 compose build 를 쓰지 않는다 — 위 "발견했지만 고치지 않은 것" 1번.
+#    🔴 이 런은 compose build 를 쓰지 않았다 — 위 "발견했지만 고치지 않은 것" 1번(2026-08-13 해소).
+#    지금 재현한다면 `docker compose --env-file server/.env --profile app build server` 도 같은
+#    runtime 이미지를 굽는다. 아래 줄은 이 런이 실제로 쓴 명령이라 그대로 둔다.
 docker build --target runtime -t project-atlas-server:latest -f server/Dockerfile server
 docker compose --env-file server/.env --profile app up -d --force-recreate server
 docker logs project-atlas-server-1 | Select-String 'queue cap'   # 128 이 찍혀야 한다

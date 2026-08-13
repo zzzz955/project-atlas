@@ -72,6 +72,11 @@ services:
     build:
       context: ./server
       dockerfile: Dockerfile
+      # 🔴 `target:` 은 생략할 수 없다. 생략하면 compose 는 Dockerfile 의 **마지막 스테이지**를
+      #    굽는데, §11.1a 가 심볼 반출용 `FROM scratch AS symbols` 를 뒤에 붙인 뒤로 그 마지막은
+      #    runtime 이 아니다 — 결과는 9 MB 짜리 빈 이미지이고 `up -d` 가 `no command specified`
+      #    로 죽는다. 스테이지를 추가할 때마다 이 줄이 지켜야 하는 것이 그것이다(§15.3).
+      target: runtime
     restart: unless-stopped
     env_file:
       - server/.env

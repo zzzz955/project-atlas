@@ -28,6 +28,14 @@
 //
 // This cost a CI round trip (architecture-design.md §15.5i): the local sweep could not catch it,
 // because MSVC's STL never reports `operator*` for this check at all.
+//
+// 🔴 AND DO NOT DEREFERENCE THE OPTIONAL INSIDE AN EXPECT_/ASSERT_ MACRO BODY. Those expand into
+// their own statement soup, and a deref buried in one is where the check loses the location the
+// guard established. Bind the contained value to a reference right after the guard and use that:
+//
+//     ATLAS_ASSERT_HAS_VALUE(revived);
+//     atlas::PooledConnection& lease = *revived;
+//     EXPECT_NO_THROW(lease->Prepare(sql).Execute(parameters));
 #define ATLAS_ASSERT_HAS_VALUE(opt)         \
     do {                                    \
         if (!(opt).has_value()) {           \
