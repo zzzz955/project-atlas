@@ -20,10 +20,18 @@ IoRunner::~IoRunner() {
     // Safety net, not the intended path. A caller that forgot Stop() must not hang the process at
     // teardown, so this abandons whatever is still queued rather than waiting for it to drain —
     // the opposite of what Stop() does, and deliberately so.
-    work_guard_.reset();
-    if (!workers_.empty()) {
-        io_context_.stop();
-        JoinWorkers();
+    //
+    // 🔴 A destructor is noexcept, and `JoinWorkers` calls std::thread::join, which reports failure
+    // by THROWING std::system_error. Without this catch a join that fails during teardown does not
+    // report anything — it calls std::terminate, which is a strictly worse outcome than the leaked
+    // thread it would be complaining about. Same shape and same reason as RedisConnection::Stop.
+    try {
+        work_guard_.reset();
+        if (!workers_.empty()) {
+            io_context_.stop();
+            JoinWorkers();
+        }
+    } catch (...) {  // NOLINT — a noexcept teardown has nowhere left to report to.
     }
 }
 

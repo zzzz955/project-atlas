@@ -77,11 +77,11 @@ std::filesystem::path WindowsDumpPath() {
     ::GetSystemTime(&now);
     const DWORD process_id = ::GetCurrentProcessId();
 
-    wchar_t filename[256]{};
-    std::swprintf(filename, std::size(filename), L"%ls-%04u%02u%02uT%02u%02u%02uZ-p%lu-%hs.dmp",
+    std::array<wchar_t, 256> filename{};
+    std::swprintf(filename.data(), filename.size(), L"%ls-%04u%02u%02uT%02u%02u%02uZ-p%lu-%hs.dmp",
                   g_windows_crash.basename.c_str(), now.wYear, now.wMonth, now.wDay, now.wHour,
                   now.wMinute, now.wSecond, static_cast<unsigned long>(process_id), ATLAS_BUILD_ID);
-    return g_windows_crash.directory / filename;
+    return g_windows_crash.directory / filename.data();
 }
 
 DWORD WINAPI DumpThread(void*) {
@@ -102,7 +102,14 @@ DWORD WINAPI DumpThread(void*) {
             exception_info.ExceptionPointers = g_windows_crash.exception;
             exception_info.ClientPointers = FALSE;
 
-            constexpr MINIDUMP_TYPE kDumpType = static_cast<MINIDUMP_TYPE>(
+            // 🔴 `MINIDUMP_TYPE` is a FLAG enum and `MiniDumpWriteDump` documents the OR as its
+            // calling contract, so the combined value is correct by design and is deliberately not
+            // one of the enumerators. The analyzer cannot tell a flag enum from a plain one; this
+            // is the same judgement architecture-design.md §15.5h recorded for the other
+            // out-of-range enum cast in the test tree. The marker below covers one line only and
+            // must therefore stay against the code, never on a comment line (§15.5i).
+            // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+            constexpr auto kDumpType = static_cast<MINIDUMP_TYPE>(
                 MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
             const BOOL dump_written =
                 ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), file, kDumpType,
