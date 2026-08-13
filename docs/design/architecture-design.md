@@ -1492,6 +1492,22 @@ runtime 이 아니었다 — `docker compose build server` 는 9 MB 짜리 빈 �
 `RestartCount=0` · `db runner started: 2 threads, queue cap 128` · `GAME listening on 0.0.0.0:7777`,
 `atlas_console` 로 `load` → `inv` → `equip`(슬롯 교체까지) → `rank` 가 전부 응답했다.
 
+🔴 **그리고 compose 는 버전 각인 인자를 넘긴다 (2026-08-13).** 위 "레이어 캐시가 어제 바이너리를
+배포한다" 는 `/app/VERSION` 으로 막는 것인데, `compose.yaml` 이 `ATLAS_GIT_SHA` /
+`ATLAS_BUILD_TIME` 을 넘기지 않아 **그 파일이 `revision=unknown` 으로 구워지고 있었다** — 확인
+절차가 살아 있는 채로 아무것도 확인하지 못하는 상태였다. 같은 인자가 빌더의
+`-DATLAS_BUILD_ID` 로도 들어가므로(§11.1a) 크래시 진단의 `build=` 도 함께 비어 있었다. 즉 표시용
+문자열이 아니라 **사고 분석의 좌표**다.
+- `compose.yaml` 의 `server.build.args` 가 두 값을 `${VAR:-unknown}` 으로 받는다. 🔴 **`.env` 에
+  넣지 않는다**(§5.4) — 자격증명도 스택 설정도 아니고 빌드마다 달라지는 값이라, 파일에 적는 순간
+  어제 값이 굳는다. 셸에서 준다: `$env:ATLAS_GIT_SHA = (git rev-parse --short HEAD)`.
+- 미설정을 `:?` 에러로 만들지 않은 이유는 기동을 막을 이유가 없고 **빠진 사실이 조용히 묻히지도
+  않기** 때문이다: entrypoint 가 다른 일을 하기 전에 `/app/VERSION` 을 찍으므로 부팅 로그 첫 줄이
+  `revision=unknown` 이 된다.
+- 실측: 인자를 준 뒤 `docker run --rm --entrypoint cat project-atlas-server /app/VERSION` →
+  `revision=3f306af` · `built=2026-08-13T22:31:08Z`, 부팅 로그 첫 줄이 같은 값이고
+  `crash diagnostics ready [build=3f306af …]` 로 build-id 까지 채워졌다.
+
 🔴 **부하 하네스는 빌더 스테이지에서만 빌드되고 런타임 스테이지로 복사되지 않는다 (2026-08-10,
 §16.1).** 빌더가 `COPY loadgen` 을 하는 이유는 루트 `CMakeLists.txt` 가 그 디렉터리를 잡기
 때문이고(없으면 configure 실패), 런타임에 넣지 않는 이유는 테스트 바이너리를 넣지 않는 것과 같다 —

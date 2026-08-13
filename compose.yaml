@@ -77,6 +77,23 @@ services:
       #    runtime 이 아니다 — 결과는 9 MB 짜리 빈 이미지이고 `up -d` 가 `no command specified`
       #    로 죽는다. 스테이지를 추가할 때마다 이 줄이 지켜야 하는 것이 그것이다(§15.3).
       target: runtime
+      # 🔴 버전 각인. 이 두 값이 없으면 `/app/VERSION` 은 `revision=unknown` 이 되고, §15.3 이
+      #    "배포 절차의 일부"라고 못 박은 버전 확인이 아무것도 말하지 않는다. `ATLAS_GIT_SHA` 는
+      #    빌더의 `-DATLAS_BUILD_ID` 까지 먹이므로(§11.1a) 비면 크래시 심볼의 build-id 도 함께
+      #    빈다 — 즉 이건 표시용 문자열이 아니라 사고 분석의 좌표다.
+      #
+      #    🔴 `.env` 에 넣지 않는다(§5.4): 이건 자격증명도 스택 설정도 아니라 **빌드마다 달라지는
+      #    값**이고, 파일에 적히는 순간 어제 값이 그대로 굳는다. 셸에서 준다:
+      #      $env:ATLAS_GIT_SHA = (git rev-parse --short HEAD)
+      #      $env:ATLAS_BUILD_TIME = (Get-Date -AsUTC -Format s) + 'Z'
+      #      docker compose --env-file server/.env --profile app build server
+      #
+      #    미설정이 `:?` 에러가 아니라 `unknown` 인 이유: 이 값은 기동을 막을 이유가 없고, 빠진
+      #    사실이 조용히 묻히지도 않는다 — entrypoint 가 무슨 일을 하기 전에 `/app/VERSION` 을
+      #    그대로 찍으므로 `revision=unknown` 이 부팅 로그 첫 줄에 남는다.
+      args:
+        ATLAS_GIT_SHA: ${ATLAS_GIT_SHA:-unknown}
+        ATLAS_BUILD_TIME: ${ATLAS_BUILD_TIME:-unknown}
     restart: unless-stopped
     env_file:
       - server/.env
