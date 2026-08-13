@@ -134,6 +134,26 @@ function polylineSegments(points) {
     return segments;
 }
 
+// 램프업 단계 경계. 🔴 단계 라벨이 없으면 거부율이 오르는 순간이 "언제부터"인지 알 수 없고,
+// 그 답(동시성 N에서 큐 상한을 넘었다)이 이 그림의 전부다.
+function stageBands(marks, toX, top, plotHeight, plotRight) {
+    if (marks.length < 2) return [];
+    const parts = [];
+    marks.forEach((mark, index) => {
+        if (index === 0) return;
+        const x = toX(mark.t);
+        if (x > plotRight) return;
+        parts.push(
+            `<line x1="${x.toFixed(1)}" y1="${top}" x2="${x.toFixed(1)}" ` +
+                `y2="${top + plotHeight}" stroke="var(--axis)" stroke-width="1" ` +
+                `stroke-dasharray="3 3" />`,
+            `<text x="${(x + 4).toFixed(1)}" y="${(top + plotHeight - 6).toFixed(1)}" ` +
+                `class="ax">${escapeHtml(String(mark.connections))}</text>`,
+        );
+    });
+    return parts;
+}
+
 // 시계열 1개짜리 SVG. series = [{ label, values: [{x, y}], slot, digits }]
 function lineChart(options) {
     const { width, height, left, right, top, bottom } = CHART;
@@ -145,7 +165,7 @@ function lineChart(options) {
         ...options.series.flatMap((s) => s.values.map((v) => (v.y === null ? 0 : v.y))),
         0,
     );
-    const yMax = niceCeiling(yObserved * 1.1);
+    const yMax = options.yMax !== undefined ? options.yMax : niceCeiling(yObserved * 1.1);
     const toX = (x) => left + (x / xMax) * plotWidth;
     const toY = (y) => top + plotHeight - (y / yMax) * plotHeight;
 
@@ -176,6 +196,7 @@ function lineChart(options) {
         `<line x1="${left}" y1="${top + plotHeight}" x2="${left + plotWidth}" ` +
             `y2="${top + plotHeight}" stroke="var(--axis)" stroke-width="1" />`,
     );
+    parts.push(...stageBands(options.stageMarks || [], toX, top, plotHeight, left + plotWidth));
     for (let tick = 0; tick <= 4; tick += 1) {
         const seconds = (xMax / 4) * tick;
         parts.push(
@@ -255,12 +276,27 @@ function conditionRows(meta, notes, samples) {
                 ? '폐루프 (--rate 0)'
                 : `오픈루프 목표 ${meta.rate_per_second} req/s`,
         ]);
+        if (meta.ramp) {
+            rows.push(['램프 단계', `${meta.ramp} 커넥션 · 단계당 ${meta.stage_seconds}s`]);
+        }
         rows.push(['런 길이 · 워밍업', `${meta.duration_seconds}s · ${meta.warmup_seconds}s`]);
         rows.push(['클라이언트 I/O 스레드', String(meta.io_threads)]);
         rows.push(['대상', `${meta.host}:${meta.port} (server_id=${meta.server_id})`]);
         rows.push(['샘플 간격', `${meta.sample_interval_ms} ms`]);
     }
     rows.push(['수집된 샘플', `${samples.length} 개`]);
+    // 🔴 클라이언트가 센 거부 총계. 서버가 센 것(§10.8 카운터 로그)과 맞는지는 --note 로 같이
+    //    싣는다 — 두 수가 갈리면 둘 중 하나가 틀렸다는 뜻이고 그것이 보고 대상이다.
+    if (samples.some((s) => s.responses !== undefined)) {
+        const responses = samples.reduce((sum, s) => sum + (s.responses ?? 0), 0);
+        const rejections = samples.reduce((sum, s) => sum + (s.rejections ?? 0), 0);
+        const share = responses > 0 ? ((rejections / responses) * 100).toFixed(2) : '0.00';
+        rows.push([
+            '거부 (클라이언트 집계)',
+            `${rejections} / ${responses} 응답 = ${share} % · 로드 거부 누계 ` +
+                `${samples[samples.length - 1].load_rejections ?? 0}`,
+        ]);
+    }
     for (const note of notes) {
         const split = note.indexOf('=');
         if (split > 0) rows.push([note.slice(0, split).trim(), note.slice(split + 1).trim()]);
@@ -269,41 +305,98 @@ function conditionRows(meta, notes, samples) {
     return rows;
 }
 
+// 단계 경계 = `stage` 필드가 바뀌는 첫 샘플. 🔴 meta 에서 계산하지 않고 관측에서 뽑는다 —
+// 계획된 스케줄이 아니라 실제로 그 초에 무엇이 돌았는지가 그림의 x축이다.
+function stageMarks(samples) {
+    const marks = [];
+    let previous = null;
+    for (const sample of samples) {
+        const stage = sample.stage;
+        if (stage === undefined || stage === previous) continue;
+        previous = stage;
+        marks.push({ t: sample.t, connections: sample.stage_connections ?? 0 });
+    }
+    return marks;
+}
+
 function buildHtml(options, meta, samples) {
     const warmup = meta ? Number(meta.warmup_seconds) : 0;
-    const rps = samples.map((s) => ({ x: s.t, y: s.rps }));
-    const p50 = samples.map((s) => ({ x: s.t, y: s.p50 }));
-    const p99 = samples.map((s) => ({ x: s.t, y: s.p99 }));
+    const marks = stageMarks(samples);
+    const isRamp = marks.length > 1;
+
+    // 🔴 수락된 것만. 거부는 아무것도 실행하지 않고 즉시 답하므로 전체 응답률에 섞으면 곡선이
+    //    과부하 구간에서 두 자릿수 배로 뛴다 — "빨라졌다"로 읽히는 그 형태다.
+    const accepted = samples.map((s) => {
+        if (s.responses === undefined) return { x: s.t, y: s.rps };
+        const rejected = s.rejections ?? 0;
+        const ratio = s.responses > 0 ? (s.responses - rejected) / s.responses : 0;
+        return { x: s.t, y: s.rps * ratio };
+    });
+    const rejectPercent = samples.map((s) => {
+        if (s.responses === undefined) return { x: s.t, y: null };
+        return {
+            x: s.t,
+            y: s.responses > 0 ? ((s.rejections ?? 0) / s.responses) * 100 : 0,
+        };
+    });
+    const hasRejectSeries = rejectPercent.some((point) => point.y !== null);
+    const okP50 = samples.map((s) => ({ x: s.t, y: s.ok_p50 === undefined ? s.p50 : s.ok_p50 }));
+    const okP99 = samples.map((s) => ({ x: s.t, y: s.ok_p99 === undefined ? s.p99 : s.ok_p99 }));
     const probe = samples.map((s) => ({
         x: s.t,
         y: s.fsync_probe_ms === null || s.fsync_probe_ms === undefined ? null : s.fsync_probe_ms,
     }));
     const hasProbe = probe.some((point) => point.y !== null);
 
+    const stageNote = isRamp ? ' · 점선 = 램프 단계 경계, 숫자는 그 단계의 동시 커넥션' : '';
     const charts = [
         lineChart({
-            title: '처리량',
-            subtitle: '초당 완료된 장착 왕복 (req/s)',
+            title: '처리량 — 수락된 요청',
+            subtitle: `서버가 실제로 실행한 장착 왕복 (req/s)${stageNote}`,
             warmupSeconds: warmup,
             tickDigits: 0,
-            series: [{ label: 'req/s', slot: 1, digits: 1, values: rps }],
+            stageMarks: marks,
+            series: [{ label: 'ok/s', slot: 1, digits: 1, values: accepted }],
         }),
+        hasRejectSeries
+            ? lineChart({
+                  title: '거부율',
+                  subtitle:
+                      '응답 중 kEquipResponseUnavailable 의 비율 (%) · DB 큐 상한을 넘긴 ' +
+                      `초과분 (§10.8)${stageNote}`,
+                  warmupSeconds: warmup,
+                  tickDigits: 0,
+                  yMax: 100,
+                  stageMarks: marks,
+                  series: [{ label: '거부 %', slot: 2, digits: 1, values: rejectPercent }],
+              })
+            : emptyChart(
+                  '거부율',
+                  '응답 중 kEquipResponseUnavailable 의 비율 (%)',
+                  '이 JSONL 에는 거부 필드가 없다 — 큐 상한(§10.8)보다 앞선 하네스가 남긴 런이다. ' +
+                      '거부율 없는 처리량 곡선은 "상한에서 눌린 것"과 "거부로 흘린 것"을 ' +
+                      '구분하지 못한다.',
+              ),
         lineChart({
-            title: '지연 백분위',
-            subtitle: '요청 송신 → 응답 수신 (ms) · 보간 없는 nearest-rank',
+            title: '지연 백분위 — 수락된 요청',
+            subtitle:
+                '요청 송신 → 응답 수신 (ms) · 보간 없는 nearest-rank · 🔴 거부는 아무것도 ' +
+                `실행하지 않고 즉시 답하므로 이 곡선에서 빠져 있다${stageNote}`,
             warmupSeconds: warmup,
             tickDigits: 0,
+            stageMarks: marks,
             series: [
-                { label: 'p50', slot: 1, digits: 1, values: p50 },
-                { label: 'p99', slot: 2, digits: 1, values: p99 },
+                { label: 'p50', slot: 1, digits: 1, values: okP50 },
+                { label: 'p99', slot: 2, digits: 1, values: okP99 },
             ],
         }),
         hasProbe
             ? lineChart({
                   title: 'fsync 프로브',
-                  subtitle: 'DB 볼륨 O_DSYNC 지연 (ms) · §16.1c-① 의 레짐 판별기',
+                  subtitle: `DB 볼륨 O_DSYNC 지연 (ms) · §16.1c-① 의 레짐 판별기${stageNote}`,
                   warmupSeconds: warmup,
                   tickDigits: 1,
+                  stageMarks: marks,
                   series: [{ label: 'fsync', slot: 1, digits: 2, values: probe }],
               })
             : emptyChart(
@@ -432,7 +525,7 @@ function main() {
     fs.mkdirSync(path.dirname(path.resolve(options.output)), { recursive: true });
     fs.writeFileSync(options.output, buildHtml(options, meta, samples), 'utf8');
     process.stdout.write(
-        `[loadreport] ${options.output} (${samples.length} samples, charts=3)\n`,
+        `[loadreport] ${options.output} (${samples.length} samples, charts=4)\n`,
     );
 }
 
