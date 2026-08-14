@@ -6,9 +6,14 @@ swapped onto. The demo game exists only to exercise the core.
 **Primary purpose = job-search artifact**: prove C++ / async IO / TCP / serialization /
 multithreading / load at scale. 🔴 **Revenue is explicitly not a goal of this project.**
 
-Status: **core layers landing** (2026-08-10). Built: `atlas/config`, `atlas/core` (ctx/log/error/ids/
-types), `atlas/net` (acceptor/session/io_runner — byte boundary), `generated/{pkt,db}`. Not built:
-frame layer, DB runtime, any server binary.
+Status: **Phase-1 GAME slice runs end to end** (2026-08-14). Built: `atlas/config`, `atlas/core`
+(ctx/log/error/ids/types/crash), `atlas/net` (acceptor/session/io_runner — byte boundary, idle
+timeout, accept backoff), `atlas/proto` (frame layer), `atlas/db` (ORM runtime — pool/prepared
+stmt/RAII tx/`DbRunner` + queue cap + load shedding), `atlas/redis` (read cache axis),
+`generated/{info,pkt,db}`, and three binaries: `game` (the only real `ATLAS_ROLE`), `loadgen`,
+`console_client`. Load measured and the bottleneck identified as a formula (`AD §16.1d`).
+Not built: `fe`/`world` roles (they fail loudly — `AD §15.3`), Actor/AoI/BT (`AD §7`), auth
+(`AD §12`), integrity layer 2 (HMAC — `AD §8.1`), Relay.
 
 > Doc language: `AGENTS.md` is English and token-efficient (AI context). Human design docs under
 > `docs/` are Korean. Chat replies follow the user's language preference.
@@ -16,7 +21,7 @@ frame layer, DB runtime, any server binary.
 ## Nav
 | path | role | doc |
 |------|------|-----|
-| `docs/design/architecture-design.md` | **Top-level SoT.** Purpose, Phase-1 success criteria, topology (FE/GAME/WORLD), config sources `§5.4`, 3-tier identity, Actor/AoI/BT, protocol + integrity layers, thread model + ctx, custom ORM + Redis policy `§10.2`, logging/exception policy, templatization seam (4 layers, incl. deploy/stack config), build chain — compose deploy `§15.3`, CI gate `§15.4`, CI infra/vcpkg cache `§15.5` — open items, risks | — |
+| `docs/design/architecture-design.md` | **Top-level SoT.** Purpose, Phase-1 success criteria, topology (FE/GAME/WORLD), config sources `§5.4`, 3-tier identity, Actor/AoI/BT, protocol + integrity layers, thread model + ctx `§9`–`§9.3`, custom ORM `§10.3` + Redis policy `§10.2` (partly reversed by `§10.6`) + load shedding `§10.8`, logging/exception + crash diagnostics `§11.1a`, templatization seam (4 layers, incl. deploy/stack config), build chain — compose deploy `§15.3`, CI gate `§15.4`, CI infra/vcpkg cache `§15.5` — **load measurement `§16.1a`–`§16.1j`** (harness, conditions, bottleneck verdict, cache A/B, ramp, crash post-mortem), open items, risks | — |
 | `docs/conventions/cpp-style.md` | **Coding convention SoT.** Namespace, naming, type rules (fixed-width ints, A-plan aliases, strong-typed IDs), macro policy, template policy, and the 3-layer mechanical enforcement | — |
 
 ## Domain matrix (trigger → required reading, BEFORE planning or editing)
@@ -28,8 +33,12 @@ already fully in context. `AD` = `docs/design/architecture-design.md`, `CS` = `d
 |---|---|---|
 | packet · frame · serialization · DTO · checksum · HMAC · sequence number · bandwidth · delta/quantization | Protocol | `AD §8` (+ `CS §4.1` int/long ban) |
 | thread · strand · io_context · concurrency · lock · mutex · semaphore · ctx | Thread model | `AD §9`, `§9.1`, `§9.2` |
-| exception · async handler · `Guarded` · logging · log macro · crash | Logging / exception | `AD §11` (+ `CS §5` macro policy) |
-| ORM · DB · `schema.json` · persistence · transaction · prepared statement · per-character lock | Persistence | `AD §10` (+ `CS §4.3` strong-typed IDs) |
+| idle timeout · keepalive · accept backoff · `TCP_NODELAY` · socket option · connection lifetime · slowloris | Connection lifetime | `AD §9.3` |
+| exception · async handler · `Guarded` · logging · log macro · crash · minidump · SEH · build-id | Logging / exception | `AD §11`, `§11.1a` (+ `CS §5` macro policy) |
+| ORM · DB · `schema.json` · persistence · transaction · prepared statement · per-character lock · connection pool | Persistence | `AD §10`, `§10.3`, `§10.5` (+ `CS §4.3` strong-typed IDs) |
+| cache · Redis 캐시 · invalidation · ranking · read-through · TTL | Cache axis | `AD §10.2`, `§10.6` |
+| queue cap · load shedding · backpressure · overload · refusal · server counters | Load shedding | `AD §10.8`, `§16.1i` |
+| load test · benchmark · throughput · p50/p95/p99 · `loadgen` · ramp · fsync · regime · bottleneck | Load measurement | `AD §16.1a`–`§16.1j` (the one you need, not all ten) |
 | Actor · AoI · behaviour tree · tick · room · combat · coordinates | WORLD model | `AD §7` |
 | topology · FE · GAME · WORLD · routing · registry · heartbeat · InterWorld · Relay · attach/detach | Topology | `AD §5`, `§5.1`, `§5.2` |
 | identity · account · character · session id · 3-tier | Identity | `AD §6` |
@@ -133,11 +142,11 @@ AST). Suppressing the PCH just to satisfy the linter would tidy a TU the compile
 the step moved to `linux-ci` instead. Undo when clang-cl lands locally. `AD §15.4` · `CS §7.3`.
 cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them via
 `Common7\Tools\VsDevCmd.bat -arch=amd64` (both `setup.bat` and `ci-gate.ps1` do this themselves).
-CI is green as of run `31542341373` (2026-08-12, `4dc29fd`, 7m00s). The first green with
-`clang-tidy` 19 actually grading was run `31537924701` (`6be480d`) — the run §15.5c called
-first-green was 18 failing to parse `.clang-tidy` (`AD §15.5g`). Do not restate "CI is green"
-without a run id; it has been wrong twice.
-🔴 **That green skips 25 of 131 tests and `ctest` still prints `100% tests passed`** — every
+CI is green as of run `31731260372` (2026-08-13, `ecb65da`, 10m10s; `clang-tidy` alone is 431s =
+71% of it). The first green with `clang-tidy` 19 actually grading was run `31537924701` (`6be480d`)
+— the run §15.5c called first-green was 18 failing to parse `.clang-tidy` (`AD §15.5g`). Do not
+restate "CI is green" without a run id; it has been wrong twice.
+🔴 **That green skips 30 of 140 tests and `ctest` still prints `100% tests passed`** — every
 DB/Redis suite, because CI has no MySQL service. The DB axis is proven only by a local `ci-gate.ps1`
 run against a reachable database (skip promoted to failure). **Quote both or neither.** `AD §15.5i`.
 `ci-gate.ps1` is still the local gate and is **not** equivalent: it skips `clang-tidy` (MSVC PCH),
@@ -200,8 +209,9 @@ docs/  template.ini  package.json  compose.yaml     (client/ is a later slice)
 DAG artifacts live in `.wp/<slot>/` and are gitignored (`work_plan.md`, `work_prompt*`).
 
 Not yet built (deferred until code exists, because their target paths and build commands must be
-real): a generated-output write guard, a `clang-format`/`clang-tidy` `PostToolUse` hook, a
-`gen-check` CI drift gate, and the per-layer implementation skills.
+real): a generated-output write guard hook, a `clang-format`/`clang-tidy` `PostToolUse` hook, and
+the per-layer implementation skills. (The `gen:check` drift gate is no longer on this list — it is
+step 1 of the CI gate.)
 
 ## Clarification Protocol
 Stop and ask **before** implementing ONLY when: the requirement is ambiguous with design impact, a
