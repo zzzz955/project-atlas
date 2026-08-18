@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "profile_id": "project-atlas",
+  "core_major": 3,
+  "bundles": {
+    "proto-change": {"trigger_mode": "required", "triggers": ["packet", "protocol", "\\bDTO\\b", "cross-server route"], "adds": {"writes": ["contracts/**", "tools/pkt_generator/**"], "generates": ["src/**/generated/**"], "tests": ["tests/**"], "docs": ["docs/design/architecture-design.md"], "resources": ["pkt-generator"]}},
+    "db-schema-change": {"trigger_mode": "required", "triggers": ["schema.json", "database schema", "ORM", "migration"], "adds": {"writes": ["schema.json", "tools/db_generator/**"], "generates": ["src/**/generated/**"], "tests": ["tests/**"], "resources": ["db-generator"]}},
+    "shared-core-change": {"trigger_mode": "required", "triggers": ["shared core", "common header", "serialization runtime"], "adds": {"writes": ["src/core/**"], "tests": ["tests/**"], "docs": ["docs/design/architecture-design.md", "docs/conventions/cpp-style.md"], "resources": ["cpp-build"]}}
+  }
+}

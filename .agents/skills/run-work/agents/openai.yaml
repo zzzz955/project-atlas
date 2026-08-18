@@ -1,4 +1,0 @@
-interface:
-  display_name: "Run Work"
-  short_description: "Execute the work_plan DAG node by node with verify gating"
-  default_prompt: "Use $run-work to execute the ready nodes of the work_plan DAG."
