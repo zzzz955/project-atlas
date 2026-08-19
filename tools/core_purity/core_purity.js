@@ -5,8 +5,8 @@
  * "코어는 게임을 알면 안 된다"(§14 코어/계약/게임 3층)의 기계 강제다.
  * `gen:check` 가 "생성물 손편집"에 대해 하는 일을, 이 검사기가 "코어 오염"에 대해 한다.
  *
- * 🔴 생성기가 아니라 **검사기**다 — 아무것도 쓰지 않고 exit code 로만 말한다.
- * 🔴 로컬 게이트(PowerShell)와 CI(bash)가 같은 명령(`npm run check:core-purity`)을 부르도록
+ * 생성기가 아니라 **검사기**다 — 아무것도 쓰지 않고 exit code 로만 말한다.
+ * 로컬 게이트(PowerShell)와 CI(bash)가 같은 명령(`npm run check:core-purity`)을 부르도록
  *    Node 한 벌로 구현한다. 스크립트를 두 벌 쓰면 두 게이트가 조용히 갈라진다.
  *
  * 검사 2가지:
@@ -28,7 +28,7 @@ const DEFAULT_ROOT = path.join(REPO_ROOT, 'server', 'atlas');
 const ALLOWLIST = path.join(TOOL_DIR, 'allowlist.txt');
 const DENYLIST = path.join(TOOL_DIR, 'denylist.txt');
 
-// 🔴 검사 대상에서 제외: 생성물(손으로 쓰지 않는다)과 테스트(게임 어휘를 써도 된다).
+// 검사 대상에서 제외: 생성물(손으로 쓰지 않는다)과 테스트(게임 어휘를 써도 된다).
 // 주석/코드는 구분하지 않는다 — 주석에 게임 이름이 박히는 것도 오염이다.
 const SKIP_DIRS = new Set(['generated', 'tests']);
 const SOURCE_EXT = new Set(['.h', '.cpp']);
@@ -62,7 +62,7 @@ function rel(p) {
 
 /**
  * 허용 목록. 각 줄은 `<include 경로>  # <사유> (§절번호)` 형식이다.
- * 🔴 사유 없는 줄은 거부한다 — 사유 없이 늘어나는 예외는 검사 자체를 무의미하게 만든다.
+ * 사유 없는 줄은 거부한다 — 사유 없이 늘어나는 예외는 검사 자체를 무의미하게 만든다.
  */
 function loadAllowlist() {
   const allowed = new Set();
@@ -92,7 +92,7 @@ function loadDenylist() {
     terms.push(line);
   });
   if (terms.length === 0) fail(`${rel(DENYLIST)}: 용어가 하나도 없다`);
-  // 🔴 대소문자 무시 **부분 문자열** 매칭이다. 단어 경계로 맞추면 `boss_id` · `ApplySkillDamage`
+  // 대소문자 무시 **부분 문자열** 매칭이다. 단어 경계로 맞추면 `boss_id` · `ApplySkillDamage`
   //    처럼 게임 어휘가 실제로 코드에 나타나는 형태를 전부 놓친다(측정: 두 형태 모두 \b 로는 0건).
   //    대가는 거짓 양성이며(`mob` 이 `mobility` 를 잡는다), 그때는 목록에서 그 용어를 빼는 것이
   //    답이지 매칭을 느슨하게 하는 것이 아니다.
@@ -146,7 +146,7 @@ function main() {
   const deny = loadDenylist();
   const files = collectSources(root);
 
-  // 🔴 0개 파일 통과가 이 검사의 최악 실패 모드다 — 경로 오타 하나로 게이트가 영원히 초록불이 된다.
+  // 0개 파일 통과가 이 검사의 최악 실패 모드다 — 경로 오타 하나로 게이트가 영원히 초록불이 된다.
   if (files.length === 0) {
     console.error(`[core-purity] ERROR: 스캔한 파일이 0개다 (root: ${root}). 경로를 확인하라.`);
     process.exit(1);

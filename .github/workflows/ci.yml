@@ -1,5 +1,5 @@
-# ✅ GREEN since run 31358038029 (2026-08-10, `6fa57c9`) - all 7 gate steps pass in 7m04s.
-# 🔴 Do NOT read that as "CI is settled": the three failures below took three separate fixes, and
+# GREEN since run 31358038029 (2026-08-10, `6fa57c9`) - all 7 gate steps pass in 7m04s.
+# Do NOT read that as "CI is settled": the three failures below took three separate fixes, and
 # every one of them was a wrong diagnosis on the first try. Full logs and measurements are in
 # architecture-design.md §15.5 / §15.5a / §15.5b / §15.5c / §15.5d.
 #
@@ -10,19 +10,19 @@
 #   run 31153396554 : failed at `configure` a THIRD time, and this one was NOT a flake -
 #                     `Could not find rpc/rpc.h` (libmysql's cmake/rpc.cmake). ubuntu-24.04 dropped
 #                     the Sun RPC headers from glibc; libmysql needs libtirpc-dev.
-#                     🔴 server/Dockerfile already installed libtirpc-dev and said why - this file
+#                     server/Dockerfile already installed libtirpc-dev and said why - this file
 #                     never learned it. The two Linux build recipes had drifted.
 # Three failures, three different causes, one common source: libmysql. §15.5a (2026-08-10) swaps the
 # DB client to `libmariadb` (92 transitive ports -> 4). Dep count is still 6 (§15.2).
 #
-# 🔴 THE BINARY CACHE HAD NEVER WORKED until 2026-08-10. Measured on run 31153396554 (§15.5b):
+# THE BINARY CACHE HAD NEVER WORKED until 2026-08-10. Measured on run 31153396554 (§15.5b):
 # vcpkg printed "The 'x-gha' binary caching backend has been removed" and carried on with NO cache
 # at all - `clear;` had also disabled the default local one. Timings from that run: attempt 1 =
 # 9m18s (102 ports built from source), attempts 2 and 3 = ~21s each (they reused the on-disk tree,
 # not a cache). Replaced with the `files` backend wrapped in actions/cache; the first green run
 # stored 38 MB (§15.5c).
 #
-# 🔴 The bottleneck MOVES once that cache is warm. On the first green run `configure` was 3m46s
+# The bottleneck MOVES once that cache is warm. On the first green run `configure` was 3m46s
 # (cache miss) and `clang-tidy` 2m16s; from the second run on, configure collapses and clang-tidy
 # is the largest step in the gate. That is why clang-tidy is fanned out per file below (§15.5d).
 #
@@ -35,7 +35,7 @@ on:
   push:
   pull_request:
 
-# 🔴 A superseded run is wasted runner time and a misleading red X on an old commit. Only the newest
+# A superseded run is wasted runner time and a misleading red X on an old commit. Only the newest
 # push per ref survives. Never add `cancel-in-progress` to a deploy workflow - here nothing is
 # deployed, so cancelling is free.
 concurrency:
@@ -46,7 +46,7 @@ jobs:
   gate:
     runs-on: ubuntu-24.04
     env:
-      # 🔴 NOT x-gha - that backend was removed from vcpkg and silently did nothing (§15.5b).
+      # NOT x-gha - that backend was removed from vcpkg and silently did nothing (§15.5b).
       # The `files` backend writes real archives to a directory, and actions/cache carries that
       # directory between runs.
       VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}/.vcpkg-binary-cache,readwrite'
@@ -57,9 +57,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 🔴 Decides whether the C++ half of the gate runs at all. A docs-only push does not need a
+      # Decides whether the C++ half of the gate runs at all. A docs-only push does not need a
       # 60-port vcpkg install to prove anything.
-      # 🔴 FAILS SAFE: force push, first push, shallow history, or any pull_request event -> the
+      # FAILS SAFE: force push, first push, shallow history, or any pull_request event -> the
       # base commit is unusable, so we run EVERYTHING. A skip gate that guesses wrong is worse than
       # no skip gate, because it reports green for code nobody compiled.
       - name: decide whether C++ steps run
@@ -95,14 +95,14 @@ jobs:
       - name: npm ci
         run: npm ci
 
-      # 🔴 Mechanical enforcement of "never edit generated output": if server/generated/** does not
+      # Mechanical enforcement of "never edit generated output": if server/generated/** does not
       # match what the generators produce from the current inputs, the gate stops here.
-      # 🔴 This one runs on EVERY push, docs-only included - the drift it guards against is cheap to
+      # This one runs on EVERY push, docs-only included - the drift it guards against is cheap to
       # check and expensive to miss.
       - name: gen:check (generated-output drift)
         run: npm run gen:check
 
-      # 🔴 Mechanical enforcement of "the core must not know the game" (§14, §15.4). Same Node
+      # Mechanical enforcement of "the core must not know the game" (§14, §15.4). Same Node
       # checker server/scripts/ci-gate.ps1 runs - one implementation, two callers.
       - name: core-purity (core must not know the game)
         run: npm run check:core-purity
@@ -113,7 +113,7 @@ jobs:
       # clang-tidy >= 19 - below that the key is a hard parse error, not a silent no-op.
       # cpp-style.md §7.1.
       #
-      # 🔴 The LLVM tools come from apt.llvm.org, NOT from noble-updates, AND every step calls the
+      # The LLVM tools come from apt.llvm.org, NOT from noble-updates, AND every step calls the
       # version-suffixed binary directly. Both halves are load-bearing (§15.5f/g):
       #   - noble-updates carries 19.1.1, which measures ColumnLimit in BYTES when aligning trailing
       #     comments; 19.1.5+ measures display columns. A comment carrying "§" or "—" is legal under
@@ -133,7 +133,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build clang-format-19 clang-tidy-19 \
             pkg-config curl zip unzip tar autoconf autoconf-archive automake libtool
-          # 🔴 Printed on purpose: the next version-skew failure has to be readable from the log.
+          # Printed on purpose: the next version-skew failure has to be readable from the log.
           # These are the exact binaries the format-check and clang-tidy steps invoke.
           clang-format-19 --version
           clang-tidy-19 --version | head -n 2
@@ -149,7 +149,7 @@ jobs:
           echo "baseline=${baseline}" >> "$GITHUB_OUTPUT"
           echo "key=vcpkg-x64-linux-${baseline}-${{ hashFiles('server/vcpkg.json') }}" >> "$GITHUB_OUTPUT"
 
-      # 🔴 restore and save are SPLIT on purpose. The combined actions/cache action only saves when
+      # restore and save are SPLIT on purpose. The combined actions/cache action only saves when
       # the job succeeds, which is exactly why the previous attempt never filled: the run died in
       # `configure` every time, so nothing was ever stored and the next run started from zero again
       # (§15.5). With a `save` guarded by `if: always()`, even a failed run banks the ports it did
@@ -165,7 +165,7 @@ jobs:
             vcpkg-x64-linux-${{ steps.vcpkgkey.outputs.baseline }}-
             vcpkg-x64-linux-
 
-      # 🔴 The clone is pinned to the SAME commit as vcpkg.json's builtin-baseline. Cloning master
+      # The clone is pinned to the SAME commit as vcpkg.json's builtin-baseline. Cloning master
       # meant the port tree drifted from the pinned baseline between runs, which both weakened
       # reproducibility (§15.2's whole point) and made the cache key describe something that was no
       # longer true.
@@ -181,14 +181,14 @@ jobs:
       # Configure both trees first: clang-tidy needs the compile_commands.json that only a
       # configured Ninja tree emits.
       #
-      # 🔴 Both presets now share one VCPKG_INSTALLED_DIR (CMakePresets.json), so the ~60 ports are
+      # Both presets now share one VCPKG_INSTALLED_DIR (CMakePresets.json), so the ~60 ports are
       # installed ONCE instead of once per preset. Unity build is a compiler setting and does not
       # change a single dependency, so the two trees were always installing identical port sets.
       #
-      # 🔴 Retried up to 3 times with exponential backoff, because a single upstream 500 out of the
-      # source-built ports killed two earlier runs (§15.5). 🔴 This is a bounded retry, not a loop
+      # Retried up to 3 times with exponential backoff, because a single upstream 500 out of the
+      # source-built ports killed two earlier runs (§15.5). This is a bounded retry, not a loop
       # that runs until it succeeds - after attempt 3 the step fails and the gate fails.
-      # 🔴 Every swallowed failure is printed (attempt number + which cmake preset died), so a run
+      # Every swallowed failure is printed (attempt number + which cmake preset died), so a run
       # that only passes on attempt 3 cannot be mistaken for a healthy one.
       - name: configure (retry x3)
         if: steps.scope.outputs.cpp == 'true'
@@ -224,9 +224,9 @@ jobs:
             attempt=$((attempt + 1))
           done
 
-      # 🔴 always(): banks whatever was built even when configure died. See the split-cache note
+      # always(): banks whatever was built even when configure died. See the split-cache note
       # above - this single line is the difference between a cache that fills and one that never does.
-      # 🔴 Skipped on an EXACT key hit: the entry is already complete for this vcpkg.json+baseline,
+      # Skipped on an EXACT key hit: the entry is already complete for this vcpkg.json+baseline,
       # and re-saving the same key only produces a "another job may be creating this cache" warning
       # on every run - noise that trains you to ignore the cache step's output. A restore-keys
       # (prefix) hit still reports cache-hit == 'false', so a partially-warm run does save.
@@ -239,21 +239,26 @@ jobs:
 
       - name: format-check
         if: steps.scope.outputs.cpp == 'true'
-        run: clang-format-19 --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/console_client server/tests -name '*.h' -o -name '*.cpp')
+        # server/generated is in this list on purpose. The generators pipe their emitted C++
+        # through the repo .clang-format themselves (tools/cxx-format.js), and two files under
+        # generated/ are hand-written (generated/{db,pkt}/tests/*_test.cpp) and were unformatted
+        # for as long as the blanket exclusion stood. Keep this list in sync with $sourceGlobs in
+        # server/scripts/ci-gate.ps1.
+        run: clang-format-19 --style=file --dry-run -Werror $(find server/atlas server/game server/loadgen server/console_client server/tests server/generated -name '*.h' -o -name '*.cpp')
 
-      # 🔴 This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
+      # This job is the ONLY place clang-tidy is enforced. server/scripts/ci-gate.ps1 skips it:
       # clang-tidy cannot read the MSVC /Yc precompiled header that the local Ninja/cl tree emits.
       # Here clang produces both the compile database and the PCH, so the step is sound.
       # cpp-style.md §7.3 · architecture-design.md §15.4.
       #
-      # 🔴 Run one clang-tidy per file across all cores. clang-tidy has no internal parallelism, so
+      # Run one clang-tidy per file across all cores. clang-tidy has no internal parallelism, so
       # the fan-out has to happen here. Measured (§15.5d, §15.5e): 14 TUs serial = 2m16s, fanned out
-      # = 1m18s. 🔴 That is 1.74x on a 4-vCPU runner, NOT 4x - a few TUs (the gtest-heavy test
+      # = 1m18s. That is 1.74x on a 4-vCPU runner, NOT 4x - a few TUs (the gtest-heavy test
       # translation units) dominate and the other cores idle waiting on that tail. Do not assume
       # core-count speedup for work with uneven per-item cost.
-      # 🔴 Still 48% of a warm run. Job sharding was measured and deferred, with an explicit
+      # Still 48% of a warm run. Job sharding was measured and deferred, with an explicit
       # threshold to revisit at: clang-tidy > 3min (~35 TUs). See §15.5e - this repo crosses it.
-      # 🔴 xargs exits 123 when ANY invocation fails, so the gate still fails on a single violation -
+      # xargs exits 123 when ANY invocation fails, so the gate still fails on a single violation -
       # parallelism must not soften the gate. `-n 1` gives each file its own process; the ~0.3s
       # startup is noise against ~10s of analysis, and per-file processes keep each diagnostic
       # attributable when the streams interleave.
@@ -269,7 +274,7 @@ jobs:
         working-directory: server
         run: cmake --build --preset linux-release
 
-      # 🔴 The gate that catches missing #includes and ODR collisions (§15.1, cost 4).
+      # The gate that catches missing #includes and ODR collisions (§15.1, cost 4).
       - name: build (unity OFF)
         if: steps.scope.outputs.cpp == 'true'
         working-directory: server

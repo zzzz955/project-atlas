@@ -2,7 +2,7 @@
 /**
  * project-atlas 경량 config 로더.
  * `template.ini` + `tools/types.json` 을 읽어 생성기 3종이 공유하는 설정 객체를 만든다.
- * 🔴 시크릿은 다루지 않는다 — 접속 정보 · 키는 .env 이고 이 파일은 경로/타깃만 본다.
+ * 시크릿은 다루지 않는다 — 접속 정보 · 키는 .env 이고 이 파일은 경로/타깃만 본다.
  */
 const fs = require('fs');
 const path = require('path');

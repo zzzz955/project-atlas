@@ -6,27 +6,27 @@
  * 스키마 한 벌에서 여러 타깃을 뽑는 것이 이 프레임워크의 seam 이다(architecture-design.md §14).
  * SQL 방출 로직은 자매 프로젝트(project-tower)의 db_generator 에서 그대로 가져왔고, 이 파일은
  * 거기에 **C++ emitter 를 추가**한 것이다. 경로 · 네임스페이스는 전부 `template.ini [db-gen]` 이
- * 소유한다 — 🔴 하드코딩된 게임/엔진 경로는 없다.
+ * 소유한다 — 하드코딩된 게임/엔진 경로는 없다.
  *
- * 🔴 이 슬라이스의 경계 — **ORM 런타임을 만들지 않는다**(architecture-design.md §10).
+ * 이 슬라이스의 경계 — **ORM 런타임을 만들지 않는다**(architecture-design.md §10).
  *    §10 의 ORM 은 "생성물 + 런타임" 두 부분이고, 런타임(커넥션 풀 · 트랜잭션 RAII ·
  *    per-character lock)은 아직 없다. 런타임이 없는데 CRUD 실행 코드를 뽑으면 컴파일되지 않는다.
  *    여기서 나오는 것: 행 구조체 · 컬럼 메타데이터 · placeholder SQL 상수 · 바인딩 순서 배열.
  *    여기서 나오지 않는 것: 실행 API · 커넥션 · 트랜잭션 · 락. 그것은 ORM 런타임 노드의 몫이고,
  *    그 노드가 생기면 이 emitter 를 확장해 CRUD 함수 시그니처까지 뽑는다.
  *
- * 🔴 라이브 DB 동기화는 **dev 전용**이다(architecture-design.md §10.1). 이 생성기는 스키마를
+ * 라이브 DB 동기화는 **dev 전용**이다(architecture-design.md §10.1). 이 생성기는 스키마를
  *    적용하지 않고 **마이그레이션 SQL 파일을 낸다**(§10.7). `--apply` 만 그 파일을 실행하며, `.env` 의
  *    `ATLAS_ENV` 가 정확히 `dev` 가 아니면 접속 전에 거부하고 exit 1 한다. prod 마이그레이션은
  *    사람이 그 SQL 을 읽고 직접 적용한다 — 규약이 아니라 코드가 그렇게 만든다.
  *    접속 정보는 diff / apply 경로가 실제로 접속하는 순간에만 `server/.env` 에서 **lazy** 로
- *    읽고, 🔴 `template.ini [db-gen]` 에는 접속·환경 키가 하나도 없다(§5.4).
+ *    읽고, `template.ini [db-gen]` 에는 접속·환경 키가 하나도 없다(§5.4).
  *
- * 🔴 `--check` 는 DB 에 **접속하지 않는다.** `gen:check` 는 §15.4 게이트의 선두 단계이고 CI 에는
+ * `--check` 는 DB 에 **접속하지 않는다.** `gen:check` 는 §15.4 게이트의 선두 단계이고 CI 에는
  *    MySQL 서비스가 없다 — 여기가 접속을 시도하는 순간 드리프트 게이트가 통째로 죽는다.
  *    같은 이유로 DB 미도달(또는 드라이버 미설치)은 **diff 단계만 skip** 하고 exit 0 이다.
  *
- * 🔴 문자열 SQL 조립 금지(architecture-design.md §10). 생성되는 SQL 은 `?` placeholder 가 박힌
+ * 문자열 SQL 조립 금지(architecture-design.md §10). 생성되는 SQL 은 `?` placeholder 가 박힌
  *    **고정 문자열 상수**이고, 컬럼명·값을 런타임에 이어 붙이는 코드는 뽑지 않는다.
  *
  * CLI:
@@ -43,6 +43,7 @@
 const fs = require('fs');
 const path = require('path');
 const cfg = require('../config-loader');
+const { formatCxx } = require('../cxx-format');
 
 const CHECK_ONLY = process.argv.includes('--check');
 const APPLY = process.argv.includes('--apply');
@@ -57,12 +58,12 @@ const SCHEMA_PATH = path.resolve(argValue('--schema') ?? cfg.dbGen.schemaPath);
 const CPP_OUTPUT_DIR = path.resolve(argValue('--cpp-output-dir') ?? cfg.dbGen.cppDbOutputDir);
 const SQL_OUTPUT = path.resolve(argValue('--sql-output') ?? cfg.dbGen.sqlOutput);
 const CPP_NAMESPACE = cfg.dbGen.cppNamespace;
-// 마이그레이션 출력은 입력 스키마 옆(`server/db/migrations/`)이다. 🔴 `template.ini` 에 키를 새로
+// 마이그레이션 출력은 입력 스키마 옆(`server/db/migrations/`)이다. `template.ini` 에 키를 새로
 // 만들지 않는다 — 이 노드의 규율은 "접속·환경 키를 ini 에 0개로 유지"이고, 스키마 경로 하나에서
 // 파생시키면 ini 표면을 넓히지 않고도 경로가 여전히 ini 소유로 남는다.
 const MIGRATIONS_DIR = path.resolve(
   argValue('--migrations-dir') ?? path.join(path.dirname(SCHEMA_PATH), 'migrations'));
-// 🔴 접속 정보는 여기서 읽지 않는다 — 실제로 접속하는 순간에만 lazy 로 읽는다(dbEnv()).
+// 접속 정보는 여기서 읽지 않는다 — 실제로 접속하는 순간에만 lazy 로 읽는다(dbEnv()).
 const ENV_FILE = path.resolve(argValue('--env-file') ?? path.join(cfg.root, 'server', '.env'));
 // 생성 헤더의 include 경로. CMake 의 include 루트가 `server/` 이므로(AGENTS.md "Build"),
 // 출력 디렉터리를 server/ 기준 상대 경로로 환산한 것이 그대로 include 경로가 된다.
@@ -80,8 +81,11 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-function writeTextFile(filePath, content) {
+function writeTextFile(filePath, rawContent) {
   const full = path.resolve(filePath);
+  // 생성 C++ 는 저장소 .clang-format 을 통과한 결과만 디스크에 닿는다(tools/cxx-format.js).
+  // --check 경로도 같은 결과를 비교해야 gen:check 가 드리프트를 오탐하지 않는다.
+  const content = formatCxx(full, rawContent);
   if (fs.existsSync(full) && fs.readFileSync(full, 'utf-8') === content) {
     _state.unchangedCount++;
     return;
@@ -99,7 +103,7 @@ function fail(lines) {
 }
 
 // ── 타입 해석 ────────────────────────────────────────────────────────────────────
-// 🔴 정규화 타입 → C++ / MySQL 매핑의 SoT 는 `tools/types.json` 이다. 여기에 표를 복제하지 않는다.
+// 정규화 타입 → C++ / MySQL 매핑의 SoT 는 `tools/types.json` 이다. 여기에 표를 복제하지 않는다.
 // `string(N)` · `datetime` · `json` 만 표 밖의 특수 처리이며, 그 세 개는 아래 한 곳에서 다룬다.
 const SPECIAL_TYPES = {
   datetime: { cppScalar: 'SysTime', columnType: 'DateTime', mysql: 'DATETIME', include: 'atlas/core/time.h' },
@@ -111,7 +115,7 @@ function parseStringN(type) {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// 고정폭 바이트 수. 🔴 이 값은 생성 코드의 static_assert 로 그대로 박힌다 —
+// 고정폭 바이트 수. 이 값은 생성 코드의 static_assert 로 그대로 박힌다 —
 // 폭이 주석이 아니라 빌드 실패로 강제되는 지점이다(cpp-style.md §4.1).
 const FIXED_WIDTHS = {
   int8: 1, uint8: 1, bool: 1,
@@ -120,11 +124,11 @@ const FIXED_WIDTHS = {
   int64: 8, uint64: 8, double: 8,
 };
 
-// 🔴 컬럼 이름 → 강타입 ID 매핑표(cpp-style.md §4.3, server/atlas/core/ids.h).
+// 컬럼 이름 → 강타입 ID 매핑표(cpp-style.md §4.3, server/atlas/core/ids.h).
 //    전부 `UInt64` 별칭으로 두면 `Load(server_id, character_id)` 에 인자 순서를 바꿔 넣어도
 //    컴파일이 통과하고 런타임에 조용히 틀린다. `enum class` 는 암묵 변환이 없어 같은 실수가
 //    컴파일 에러가 되며 런타임 비용은 0이다.
-//    ⚠️ `server_id` 는 일부러 여기 없다 — `ids.h` 가 "인자로 돌아다니지 않는 값에 강타입을 주면
+//    `server_id` 는 일부러 여기 없다 — `ids.h` 가 "인자로 돌아다니지 않는 값에 강타입을 주면
 //    얻는 것이 없다"는 이유로 아직 약타입으로 두었고, 이 표가 그 결정을 앞질러 가지 않는다.
 //    `account_uid` 는 platform-auth 가 소유하는 계정 식별자(design §6)이며 이름만 uid 일 뿐
 //    같은 계정 아이덴티티라 `AccountId` 로 뽑는다.
@@ -255,7 +259,7 @@ function loadSchema() {
 }
 
 /**
- * 🔴 검증을 전부 끝낸 뒤에 파일을 쓴다 — 뒤쪽 테이블이 거부당했는데 앞쪽 구조체만 새로 쓰인
+ * 검증을 전부 끝낸 뒤에 파일을 쓴다 — 뒤쪽 테이블이 거부당했는데 앞쪽 구조체만 새로 쓰인
  * 반쪽 출력이 남으면 안 된다(pkt_generator 와 같은 규약).
  */
 function analyze(schema) {
@@ -387,10 +391,10 @@ function generateTableSql(table) {
 function generateSql(schema, tables) {
   const parts = [
     '-- AUTO-GENERATED by tools/db_generator/db_generator.js — DO NOT EDIT.',
-    '-- 🔴 Hand edits are silently lost on the next `npm run gen:db` and `npm run gen:db:check`',
+    '-- Hand edits are silently lost on the next `npm run gen:db` and `npm run gen:db:check`',
     '--    fails the CI gate. Change server/db/schema.json instead.',
     '--',
-    '-- 🔴 This is the OFFLINE full-create script, not a migration. It is written without ever',
+    '-- This is the OFFLINE full-create script, not a migration. It is written without ever',
     '--    contacting a database, which is why it can be produced in CI where no MySQL exists.',
     '--    Incremental changes to a database that already has tables go to server/db/migrations/',
     '--    instead (architecture-design.md 10.7); on production a human applies those by hand.',
@@ -406,20 +410,19 @@ function generateSql(schema, tables) {
 
 // ── C++ 생성 ─────────────────────────────────────────────────────────────────────
 const BANNER = [
-  '// AUTO-GENERATED by tools/db_generator/db_generator.js — DO NOT EDIT.',
-  '// 🔴 Hand edits are silently lost on the next `npm run gen:db` and `npm run gen:db:check`',
-  '//    fails the CI gate. Change server/db/schema.json instead.',
+  '// =============================================================================',
+  '// AUTO-GENERATED by tools/db_generator/db_generator.js - 직접 수정 금지',
+  '// 손으로 고친 내용은 다음 gen:db 에서 사라지고 gen:db:check 가 CI 를 막음',
+  '// server/db/schema.json 을 고칠 것',
+  '// =============================================================================',
 ];
 
 const SCOPE_NOTE = [
-  '// 🔴 Scope of this slice (architecture-design.md 10): row structs, column metadata, prepared',
-  '//    statement text and binding order — and nothing that executes. There is no connection, no',
-  '//    transaction scope and no per-character lock here; those belong to the ORM runtime and land',
-  '//    in a later slice, which will extend this generator with the CRUD signatures on top of what',
-  '//    is emitted here. Generating call code against a runtime that does not exist would not even',
-  '//    compile.',
-  '// 🔴 No SQL is assembled at run time. Every statement below is a fixed constant with `?`',
-  '//    placeholders, so a value can never be spliced into the statement text.',
+  '// [AD 10] 이 슬라이스가 내는 것은 데이터뿐이다',
+  '// 행 구조체, 컬럼 메타데이터, prepared statement 문자열, 바인딩 순서',
+  '// 실행은 없다. 커넥션/트랜잭션/per-character lock 은 ORM 런타임의 몫',
+  '// 런타임 SQL 조립도 없다. 모든 문장은 `?` 가 박힌 고정 상수',
+  '// 그래서 값이 문장 텍스트에 끼어들 수 없다',
 ];
 
 function nsOpen() {
@@ -433,11 +436,11 @@ function nsClose() {
 function generateMetaHeader() {
   const L = [
     ...BANNER,
-    '//',
-    '// Shared vocabulary for the generated row headers: the storage type of a column, the compile',
-    '// time column descriptor, and the placeholder counter that ties each statement to its binding',
-    '// order.',
-    '//',
+    '',
+    '// 생성 행 헤더가 공유하는 어휘',
+    '// 컬럼의 저장 타입, 컴파일 타임 컬럼 서술자',
+    '// 각 문장을 바인딩 순서에 묶는 플레이스홀더 카운터',
+    '',
     ...SCOPE_NOTE,
     '',
     '#pragma once',
@@ -449,37 +452,31 @@ function generateMetaHeader() {
     '',
     nsOpen(),
     '',
-    '// Storage type of a column as declared in server/db/schema.json.',
-    '// 🔴 This describes the DATABASE column, not the C++ field. An identifier column is stored as',
-    '//    UInt64 but the row struct carries a strong-typed ID (cpp-style.md 4.3), so the two are',
-    '//    deliberately allowed to differ.',
-    '// 🔴 The underlying width is spelled out, and the enumerators come straight from the',
-    '//    normalized-type table in tools/types.json, so a new normalized type cannot be used in a',
-    '//    schema without appearing here.',
+    '// [CS 4.3] schema.json 이 선언한 컬럼의 저장 타입',
+    '// C++ 필드가 아니라 DB 컬럼을 서술한다',
+    '// 식별자 컬럼은 UInt64 저장이지만 행 구조체는 강타입 ID 라 둘이 다르다',
+    '// 열거자는 tools/types.json 정규화 타입 표에서 온다. 표에 없으면 못 쓴다',
     'enum class ColumnType : UInt8 {',
   ];
   columnTypeEnumerators().forEach((name, index) => L.push(`    ${name} = ${index},`));
   L.push(
     '};',
     '',
-    '// One column of one table. Aggregate on purpose: every instance is a compile time constant in a',
-    '// generated header, never something built at run time.',
+    '// 테이블 한 개의 컬럼 한 개. 일부러 aggregate',
+    '// 모든 인스턴스는 런타임이 아니라 생성 헤더 안의 컴파일 타임 상수',
     'struct ColumnMeta {',
     '    std::string_view name_;',
     '    ColumnType type_{};',
     '    bool primary_key_{};',
     '    bool nullable_{};',
-    '    // string(N) carries N here so a length check has a compile time bound; every other type',
-    '    // leaves it at 0.',
-    '    std::size_t max_length_{};',
+    '    std::size_t max_length_{};  // string(N) 의 N. 그 밖의 타입은 0',
     '',
     '    friend bool operator==(const ColumnMeta&, const ColumnMeta&) = default;',
     '};',
     '',
-    '// Number of `?` placeholders in a prepared statement.',
-    '// 🔴 This exists so that "the binding array matches the statement" is a static_assert in every',
-    '//    generated header rather than a promise in a comment: a statement and its binding order',
-    '//    that drift apart fail the build instead of misbinding a parameter at run time.',
+    '// prepared statement 안의 `?` 개수',
+    '// "바인딩 배열이 문장과 맞는다"를 주석의 약속으로 두지 않기 위한 것',
+    '// 생성 헤더마다 static_assert 로 굳힌다. 어긋나면 빌드가 깨진다',
     'constexpr std::size_t CountPlaceholders(std::string_view sql) {',
     '    std::size_t count = 0;',
     '    for (const char c : sql) {',
@@ -497,11 +494,10 @@ function generateMetaHeader() {
 function selfContainedSource(headerName, note) {
   return [
     ...BANNER,
-    '//',
+    '',
     `// ${note}`,
-    '// 🔴 The unity-OFF build is what turns that into a real gate (architecture-design.md 15.1) — a',
-    '//    missing include here fails the build instead of being masked by whatever the neighbouring',
-    '//    source happened to include first.',
+    '// [AD 15.1] 그 증명을 실제 게이트로 만드는 것은 unity OFF 빌드',
+    '// 여기서 빠진 include 는 이웃에 가려지지 않고 빌드를 깨뜨린다',
     '',
     `#include "${INCLUDE_PREFIX}/${headerName}"`,
     '',
@@ -542,13 +538,13 @@ function statementsOf(table) {
   const statements = [
     {
       suffix: 'SelectByPk',
-      note: ['Reads one row by primary key.'],
+      note: ['기본 키로 한 행을 읽음'],
       sql: `SELECT ${all} FROM ${quoted(table.name)} WHERE ${pkPredicate}`,
       binding: table.pkColumns,
     },
     {
       suffix: 'Insert',
-      note: ['Inserts one full row. Every column is bound, in declaration order.'],
+      note: ['한 행 전체를 삽입. 모든 컬럼을 선언 순서대로 바인딩'],
       sql: `INSERT INTO ${quoted(table.name)} (${all}) ` +
         `VALUES (${table.columns.map(() => '?').join(', ')})`,
       binding: table.columns,
@@ -558,9 +554,9 @@ function statementsOf(table) {
     statements.push({
       suffix: 'UpdateByPk',
       note: [
-        'Overwrites every non-key column of one row.',
-        '🔴 The key columns bind LAST, after the SET list. That ordering is the whole reason the',
-        '   binding array is generated instead of being assumed to match the column order.',
+        '한 행의 비-키 컬럼 전부를 덮어씀',
+        '키 컬럼은 SET 목록 뒤에 마지막으로 바인딩된다',
+        '바인딩 배열을 컬럼 순서와 같다고 가정하지 않는 이유가 이 순서 차이',
       ],
       sql: `UPDATE ${quoted(table.name)} SET ` +
         `${table.nonPkColumns.map(c => `${quoted(c.name)} = ?`).join(', ')} WHERE ${pkPredicate}`,
@@ -569,7 +565,7 @@ function statementsOf(table) {
   }
   statements.push({
     suffix: 'DeleteByPk',
-    note: ['Deletes one row by primary key.'],
+    note: ['기본 키로 한 행을 삭제'],
     sql: `DELETE FROM ${quoted(table.name)} WHERE ${pkPredicate}`,
     binding: table.pkColumns,
   });
@@ -584,8 +580,8 @@ function generateRowHeader(table) {
     ...BANNER,
     `// source: ${toRel(SCHEMA_PATH)} (table \`${table.name}\`)`,
   ];
-  if (table.comment) L.push('//', `// ${table.comment}`);
-  L.push('//', ...SCOPE_NOTE, '', '#pragma once', '');
+  if (table.comment) L.push('', `// ${table.comment}`);
+  L.push('', ...SCOPE_NOTE, '', '#pragma once', '');
   for (const i of includes.std) L.push(`#include ${i}`);
   L.push('');
   for (const i of includes.atlas) L.push(`#include "${i}"`);
@@ -593,14 +589,15 @@ function generateRowHeader(table) {
   L.push('', nsOpen(), '');
 
   // ── row struct ──
-  L.push('// One row of the table. Plain aggregate: no change tracking, no lazy loading and no unit of');
-  L.push('// work (architecture-design.md 10 forbids all three for Phase 1).');
+  L.push('// [AD 10] 테이블의 한 행. 순수 aggregate');
+  L.push('// 변경 추적도 지연 로딩도 unit of work 도 없다');
+  L.push('// Phase 1 에서 셋 다 금지');
   L.push(`struct ${table.typeName} {`);
   for (const c of table.columns) {
     const comment = [];
-    if (c.pk) comment.push('primary key');
+    if (c.pk) comment.push('기본 키');
     if (c.nullable) comment.push('nullable');
-    if (c.maxLength > 0) comment.push(`max ${c.maxLength}`);
+    if (c.maxLength > 0) comment.push(`최대 ${c.maxLength}`);
     const trailer = comment.length > 0 ? `  // ${comment.join(', ')}` : '';
     L.push(`    ${cppFieldType(c)} ${c.member}${memberInitializer(c)};${trailer}`);
   }
@@ -612,9 +609,9 @@ function generateRowHeader(table) {
   // ── width assertions ──
   const widthColumns = table.columns.filter(c => !c.nullable && c.fixedWidth !== null);
   if (widthColumns.length > 0) {
-    L.push('// 🔴 Fixed width is asserted, not documented (cpp-style.md 4.1). Windows is LLP64 and Linux is');
-    L.push('//    LP64, and this project moves between them on every deploy, so a field whose width drifts');
-    L.push('//    must break the build here rather than corrupt a row in production.');
+    L.push('// [CS 4.1] 고정폭은 문서가 아니라 단언으로 강제한다');
+    L.push('// Windows 는 LLP64, Linux 는 LP64 이고 배포마다 둘 사이를 오간다');
+    L.push('// 폭이 밀리면 프로덕션 행을 망가뜨리기 전에 여기서 빌드가 깨져야 한다');
     for (const c of widthColumns) {
       L.push(`static_assert(sizeof(${table.typeName}::${c.member}) == ${c.fixedWidth}U,`);
       L.push(`              "${table.name}.${c.name} must stay ${c.fixedWidth} bytes wide");`);
@@ -623,8 +620,8 @@ function generateRowHeader(table) {
   }
 
   // ── column metadata ──
-  L.push('// Column metadata, in schema declaration order. The order is load bearing: the binding arrays');
-  L.push('// below index into it.');
+  L.push('// 스키마 선언 순서대로의 컬럼 메타데이터');
+  L.push('// 아래 바인딩 배열이 이 순서로 인덱싱하므로 순서 자체가 계약이다');
   L.push(`inline constexpr std::string_view ${p}Table = "${table.name}";`);
   L.push(`inline constexpr std::size_t ${p}ColumnCount = ${table.columns.length};`);
   L.push('');
@@ -645,7 +642,7 @@ function generateRowHeader(table) {
   L.push('');
   const boundedColumns = table.columns.filter(c => c.maxLength > 0);
   if (boundedColumns.length > 0) {
-    L.push('// Declared bound of each text column, so a length check does not have to repeat the number.');
+    L.push('// 각 텍스트 컬럼의 선언 상한. 길이 검사가 숫자를 다시 적지 않게 함');
     for (const c of boundedColumns) {
       L.push(`inline constexpr std::size_t ${p}${toPascalCase(c.name)}MaxLength = ${c.maxLength};`);
     }
@@ -653,11 +650,13 @@ function generateRowHeader(table) {
   }
 
   // ── prepared statements ──
-  L.push('// ── Prepared statements ─────────────────────────────────────────────────────────────────────');
-  L.push('// 🔴 Fixed text with `?` placeholders. Nothing here is concatenated, formatted or streamed at');
-  L.push('//    run time (architecture-design.md 10), so no value can reach the statement text.');
-  L.push('// Each statement is followed by the column indices its placeholders bind, in order, and by the');
-  L.push('// static_assert that keeps the two in step.');
+  L.push('// =============================================================================');
+  L.push('// Prepared statements');
+  L.push('// =============================================================================');
+  L.push('// [AD 10] `?` 플레이스홀더가 박힌 고정 텍스트');
+  L.push('// 런타임에 잇거나 포맷하거나 스트리밍하지 않는다');
+  L.push('// 그래서 어떤 값도 문장 텍스트에 닿지 못한다');
+  L.push('// 문장마다 바인딩할 컬럼 인덱스와 static_assert 가 뒤따른다');
   L.push('');
   for (const s of statementsOf(table)) {
     const name = `${p}${s.suffix}`;
@@ -679,10 +678,10 @@ function generateRowHeader(table) {
 function generateAllHeader(tables) {
   return [
     ...BANNER,
-    '//',
-    '// 🔴 The aggregate header, and it is GENERATED. "Every row struct is available in one include"',
-    '//    is a claim that rots the moment a table is added and a hand-written list is not — so the',
-    '//    list is not hand-written.',
+    '',
+    '// 집합 헤더이고 생성물이다',
+    '// "행 구조체 전부가 include 하나로 들어온다"는 주장은 손으로 쓰면 썩는다',
+    '// 테이블이 추가되는 순간 목록이 뒤처지기 때문',
     '',
     '#pragma once',
     '',
@@ -695,7 +694,7 @@ function generateAllHeader(tables) {
 function generateSourcesCMake(sourceFiles) {
   return [
     '# AUTO-GENERATED by tools/db_generator/db_generator.js — DO NOT EDIT.',
-    '# 🔴 The source list is generated so that adding a table never means touching CMake, and so that',
+    '# The source list is generated so that adding a table never means touching CMake, and so that',
     '#    a stale list cannot silently drop a row struct from the build. CMakeLists.txt includes this.',
     'set(ATLAS_GENERATED_DB_SOURCES',
     ...sourceFiles.map(f => `    ${f}`),
@@ -704,12 +703,12 @@ function generateSourcesCMake(sourceFiles) {
   ].join('\n');
 }
 
-// ── 라이브 DB 동기화 (🔴 dev 전용) ───────────────────────────────────────────────
+// ── 라이브 DB 동기화 (dev 전용) ───────────────────────────────────────────────
 // 여기부터 아래는 `--check` 가 절대 밟지 않는 경로다. 위쪽 emitter 는 전부 오프라인이며,
 // 그 오프라인성이 §15.4 드리프트 게이트의 전제다.
 
 const MIGRATIONS_TABLE = 'schema_migrations';
-// 🔴 파괴적 문장의 표식. 이 접두사가 붙은 줄은 **주석**이므로 파일을 그냥 실행하면 건너뛴다.
+// 파괴적 문장의 표식. 이 접두사가 붙은 줄은 **주석**이므로 파일을 그냥 실행하면 건너뛴다.
 //    `--allow-drops` 만 접두사를 떼고 실행한다 — 데이터 손실 경로에 사람 판단을 강제하는 장치다.
 const DESTRUCTIVE_PREFIX = '-- !destructive: ';
 const ENV_KEYS = [
@@ -721,7 +720,7 @@ const CONNECTION_KEYS = ['ATLAS_DB_HOST', 'ATLAS_DB_NAME', 'ATLAS_DB_USER', 'ATL
 let _env = null;
 
 /**
- * `.env` lazy 로드. 🔴 값은 절대 로그에 찍지 않는다 — 키 이름과 출처만 찍는다
+ * `.env` lazy 로드. 값은 절대 로그에 찍지 않는다 — 키 이름과 출처만 찍는다
  * (architecture-design.md §5.4). 프로세스 환경변수가 파일보다 우선한다(dotenv 규약):
  * 컨테이너/CI 가 파일 없이도 값을 주는 정상 경로이고, prod 게이트를 시험할 때도 그 경로를 쓴다.
  */
@@ -758,7 +757,7 @@ function dbEnv() {
 }
 
 /**
- * 🔴 prod 마이그레이션을 코드가 막는 지점. 문서 규약이 아니라 여기가 강제한다.
+ * prod 마이그레이션을 코드가 막는 지점. 문서 규약이 아니라 여기가 강제한다.
  * 미설정도 거부다 — 조용한 기본값을 두지 않는다(architecture-design.md §5.4).
  */
 function requireDevEnvironment() {
@@ -789,7 +788,7 @@ function connectionSettings() {
 }
 
 /**
- * 🔴 `mysql2` 는 이 레포의 의존성이 아니다. CI 에는 MySQL 이 없어 이 경로가 아예 돌지 않고,
+ * `mysql2` 는 이 레포의 의존성이 아니다. CI 에는 MySQL 이 없어 이 경로가 아예 돌지 않고,
  * 게이트가 도는 데 필요하지도 않은 드라이버를 `npm ci` 가 매번 받아오게 만들 이유가 없다.
  * 필요할 때만 개발 머신에 깔아 쓴다: `npm install mysql2 --no-save`.
  */
@@ -801,7 +800,7 @@ function loadDriver() {
   }
 }
 
-/** 🔴 SELECT 만 한다. `gen:db` 는 어떤 경로로도 DB 를 변경하지 않는다. */
+/** SELECT 만 한다. `gen:db` 는 어떤 경로로도 DB 를 변경하지 않는다. */
 async function readDbState(conn, database) {
   const [columns] = await conn.execute(
     'SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE' +
@@ -835,7 +834,7 @@ function columnDefinitionSql(col) {
 
 /**
  * schema.json ↔ 라이브 DB diff. `{ body, deferred }` 를 돌려주고 아무것도 실행하지 않는다.
- * 🔴 `schema_migrations` 는 diff 대상에서 제외한다 — 원장이 스스로를 마이그레이션 대상으로
+ * `schema_migrations` 는 diff 대상에서 제외한다 — 원장이 스스로를 마이그레이션 대상으로
  *    보면 매 실행마다 자기 자신을 DROP 하려 든다.
  */
 function buildMigrationSql(tables, dbState) {
@@ -933,10 +932,10 @@ function migrationHeader(stamp) {
     `-- generated: ${stamp}`,
     `-- source: ${toRel(SCHEMA_PATH)}, diffed against a live database`,
     '--',
-    '-- 🔴 This file is the dev -> prod handover medium, so it is committed. `npm run gen:db:apply`',
+    '-- This file is the dev -> prod handover medium, so it is committed. `npm run gen:db:apply`',
     '--    executes it against a DEVELOPMENT database only (ATLAS_ENV=dev); on production a human',
     '--    reads it and applies it (architecture-design.md 10.7).',
-    `-- 🔴 Lines beginning with "${DESTRUCTIVE_PREFIX.trim()}" are destructive (MODIFY / DROP) and are`,
+    `-- Lines beginning with "${DESTRUCTIVE_PREFIX.trim()}" are destructive (MODIFY / DROP) and are`,
     '--    COMMENTS: running this script as-is skips them. Only `gen:db:apply -- --allow-drops`',
     '--    strips the marker and executes them.',
     '',
@@ -953,7 +952,7 @@ function withoutStamp(text) {
 }
 
 /**
- * 🔴 같은 diff 를 두 번 파일로 만들지 않는다. 그렇지 않으면 `gen:db` 를 세 번 돌린 사람이
+ * 같은 diff 를 두 번 파일로 만들지 않는다. 그렇지 않으면 `gen:db` 를 세 번 돌린 사람이
  * 내용이 같은 마이그레이션 3개를 커밋하게 되고, 원장은 그 셋 중 어느 것이 진짜인지 말할 수 없다.
  */
 function writeMigrationFile(body) {
@@ -1051,7 +1050,7 @@ async function syncWithDatabase(tables) {
     for (const d of deferred) console.log(`[db]        deferred (destructive): ${d}`);
 
     if (!APPLY) {
-      console.log('[db] 🔴 nothing was applied — `gen:db` only writes files. Use `npm run gen:db:apply`.');
+      console.log('[db] nothing was applied — `gen:db` only writes files. Use `npm run gen:db:apply`.');
       return;
     }
 
@@ -1068,7 +1067,7 @@ async function syncWithDatabase(tables) {
       `[db] applied statements=${statements.length} allow_drops=${ALLOW_DROPS}` +
       ` recorded in ${MIGRATIONS_TABLE}`);
     if (!ALLOW_DROPS && deferred.length > 0) {
-      console.log(`[db] 🔴 ${deferred.length} destructive change(s) were NOT applied (see above).`);
+      console.log(`[db] ${deferred.length} destructive change(s) were NOT applied (see above).`);
     }
   } finally {
     await conn.end();
@@ -1086,12 +1085,12 @@ async function main() {
   writeTextFile(path.join(CPP_OUTPUT_DIR, 'db_meta.h'), generateMetaHeader());
   writeTextFile(
     path.join(CPP_OUTPUT_DIR, 'db_meta.cpp'),
-    selfContainedSource('db_meta.h', 'The metadata vocabulary is header-only, so this translation unit exists for one reason: it proves the header is self-contained.'));
+    selfContainedSource('db_meta.h', '메타데이터 어휘는 헤더 온리. 이 TU 는 헤더가 자기 완결임을 증명'));
   for (const table of tables) {
     writeTextFile(path.join(CPP_OUTPUT_DIR, `${table.fileBase}.h`), generateRowHeader(table));
     writeTextFile(
       path.join(CPP_OUTPUT_DIR, `${table.fileBase}.cpp`),
-      selfContainedSource(`${table.fileBase}.h`, `The \`${table.name}\` row header is all compile time constants, so this translation unit exists for one reason: it proves the header is self-contained.`));
+      selfContainedSource(`${table.fileBase}.h`, `\`${table.name}\` 행 헤더는 전부 컴파일 타임 상수. 이 TU 는 헤더가 자기 완결임을 증명`));
     sourceFiles.push(`${table.fileBase}.cpp`);
   }
   writeTextFile(path.join(CPP_OUTPUT_DIR, 'db_all.h'), generateAllHeader(tables));
@@ -1104,7 +1103,7 @@ async function main() {
       console.error('[db]        Run `npm run gen:db` and commit the result.');
       process.exit(1);
     }
-    // 🔴 여기서 반환한다. `--check` 는 DB 에 접속하지 않는다 — CI 에는 MySQL 이 없고, 이 단계는
+    // 여기서 반환한다. `--check` 는 DB 에 접속하지 않는다 — CI 에는 MySQL 이 없고, 이 단계는
     //    §15.4 게이트의 선두다. 접속을 시도하는 순간 드리프트 게이트 전체가 죽는다.
     console.log(`[db] artifacts up to date (unchanged=${_state.unchangedCount}).`);
     return;
@@ -1115,7 +1114,7 @@ async function main() {
   console.log(`[db] output: ${toRel(CPP_OUTPUT_DIR)} (namespace ${CPP_NAMESPACE}) + ${toRel(SQL_OUTPUT)}`);
   console.log(`[db] files: changed=${_state.changed.length} unchanged=${_state.unchangedCount}`);
 
-  // 🔴 환경 게이트가 접속보다 먼저다 — 거부는 소켓이 열리기 전에 일어나야 한다.
+  // 환경 게이트가 접속보다 먼저다 — 거부는 소켓이 열리기 전에 일어나야 한다.
   if (APPLY) requireDevEnvironment();
   await syncWithDatabase(tables);
 }

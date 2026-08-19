@@ -3,13 +3,13 @@
     Local clang-tidy pre-filter (architecture-design.md §15.5i, cpp-style.md §7.3).
 
 .DESCRIPTION
-    🔴 THIS IS NOT A GATE. The gate is clang-tidy on linux-ci (.github/workflows/ci.yml). This
+    THIS IS NOT A GATE. The gate is clang-tidy on linux-ci (.github/workflows/ci.yml). This
     script runs the VS-bundled clang-tidy over the MSVC compile database so that naming / bugprone
     / modernize violations can be seen BEFORE a push, and nothing more. Its exit code is always 0
     for that reason: a clean sweep here is not evidence, and treating it as one is the mistake this
     header exists to prevent.
 
-    🔴 The two toolchains disagree in BOTH directions, measured 2026-08-13:
+    The two toolchains disagree in BOTH directions, measured 2026-08-13:
       - CI sees what this cannot: bugprone-unchecked-optional-access never fires under MSVC's STL,
         which is exactly the check that reddened CI on 2026-08-13 (§15.5i).
       - This sees what CI cannot: server/atlas/core/crash.cpp is a Windows-only translation unit on
@@ -46,7 +46,7 @@ $install = & $vswhere -latest -products * -property installationPath
 $tidy = Join-Path $install 'VC\Tools\Llvm\x64\bin\clang-tidy.exe'
 if (-not (Test-Path -LiteralPath $tidy)) { throw "clang-tidy not found at $tidy" }
 
-# 🔴 The stripped database goes to a temp directory. Rewriting the real one would hand the next
+# The stripped database goes to a temp directory. Rewriting the real one would hand the next
 # build a compile line the compiler never agreed to.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) 'atlas-tidy-prefilter'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -68,7 +68,7 @@ $sources = $entries.file |
 Write-Host "[tidy] $($sources.Count) translation units, clang-tidy from $install" -ForegroundColor Cyan
 Write-Host '[tidy] advisory only - the gate is clang-tidy on linux-ci (architecture-design.md 15.5i)' -ForegroundColor Yellow
 
-# 🔴 Native stderr is an ERROR RECORD under 'Stop' - clang-tidy's harmless "N warnings generated"
+# Native stderr is an ERROR RECORD under 'Stop' - clang-tidy's harmless "N warnings generated"
 # summary would abort the sweep. The diagnostics themselves come back on stdout.
 $ErrorActionPreference = 'Continue'
 

@@ -4,15 +4,15 @@
 // loadreport — atlas_loadgen --sample-jsonl <path> 의 산출물을 자체완결 HTML 1파일로 만든다.
 // `docs/design/architecture-design.md §16.1a` 의 시각화 축 중 "제출물용" 쪽이다.
 //
-// 🔴 생성기가 아니다. `tools/` 의 다른 셋(info · db · pkt)과 달리 입력으로부터 소스를 만들지 않고,
+// 생성기가 아니다. `tools/` 의 다른 셋(info · db · pkt)과 달리 입력으로부터 소스를 만들지 않고,
 //    따라서 `gen:all` · `gen:check` 조성에 들어가지 않는다 — 드리프트 게이트에 리포트 도구를 넣으면
 //    게이트가 "측정 산출물이 최신인가"를 묻게 되고, 그것은 게이트가 답할 수 있는 질문이 아니다.
 //
-// 🔴 외부 요청 0. CDN · 폰트 · 스크립트 · 원격 이미지 어느 것도 참조하지 않으며 <script> 자체가
+// 외부 요청 0. CDN · 폰트 · 스크립트 · 원격 이미지 어느 것도 참조하지 않으며 <script> 자체가
 //    없다. 오프라인에서 열리지 않는 파일은 제출물이 아니고, `tools/` 파이프라인의 무의존 규칙과도
 //    같은 선이다.
 //
-// 🔴 이 페이지는 `§16.1` 의 수치표를 대체하지 않는다. 표가 SoT 이고 여기 그림은 한 런의 시계열이다.
+// 이 페이지는 `§16.1` 의 수치표를 대체하지 않는다. 표가 SoT 이고 여기 그림은 한 런의 시계열이다.
 //
 // 사용:
 //   npm run loadreport -- --in run.jsonl [--out run.html] [--title "..."] [--note "키 = 값"] ...
@@ -84,7 +84,7 @@ function readSamples(inputPath) {
         else if (record.kind === 'sample') samples.push(record);
     });
     if (samples.length === 0) {
-        // 🔴 조용히 빈 페이지를 만들지 않는다. 그림이 비어 있는 리포트는 "부하가 0이었다"로
+        // 조용히 빈 페이지를 만들지 않는다. 그림이 비어 있는 리포트는 "부하가 0이었다"로
         // 읽히고, 실제 원인(런이 너무 짧아 샘플이 없었다)을 감춘다.
         fail(`${inputPath} 에 sample 레코드가 없다 — 런이 1초보다 짧았는가?`);
     }
@@ -134,7 +134,7 @@ function polylineSegments(points) {
     return segments;
 }
 
-// 램프업 단계 경계. 🔴 단계 라벨이 없으면 거부율이 오르는 순간이 "언제부터"인지 알 수 없고,
+// 램프업 단계 경계. 단계 라벨이 없으면 거부율이 오르는 순간이 "언제부터"인지 알 수 없고,
 // 그 답(동시성 N에서 큐 상한을 넘었다)이 이 그림의 전부다.
 function stageBands(marks, toX, top, plotHeight, plotRight) {
     if (marks.length < 2) return [];
@@ -171,7 +171,7 @@ function lineChart(options) {
 
     const parts = [];
     // 워밍업 구간: 하네스가 버리는 접두부(§16.1a). 그림에는 남기고 음영으로 구분한다 —
-    // 🔴 레짐 전환(§16.1c-①)은 바로 이 근처에서 시작하므로 잘라내면 서사가 사라진다.
+    // 레짐 전환(§16.1c-①)은 바로 이 근처에서 시작하므로 잘라내면 서사가 사라진다.
     if (options.warmupSeconds > 0) {
         const warmupWidth = Math.min(toX(options.warmupSeconds), left + plotWidth) - left;
         parts.push(
@@ -285,7 +285,7 @@ function conditionRows(meta, notes, samples) {
         rows.push(['샘플 간격', `${meta.sample_interval_ms} ms`]);
     }
     rows.push(['수집된 샘플', `${samples.length} 개`]);
-    // 🔴 클라이언트가 센 거부 총계. 서버가 센 것(§10.8 카운터 로그)과 맞는지는 --note 로 같이
+    // 클라이언트가 센 거부 총계. 서버가 센 것(§10.8 카운터 로그)과 맞는지는 --note 로 같이
     //    싣는다 — 두 수가 갈리면 둘 중 하나가 틀렸다는 뜻이고 그것이 보고 대상이다.
     if (samples.some((s) => s.responses !== undefined)) {
         const responses = samples.reduce((sum, s) => sum + (s.responses ?? 0), 0);
@@ -305,7 +305,7 @@ function conditionRows(meta, notes, samples) {
     return rows;
 }
 
-// 단계 경계 = `stage` 필드가 바뀌는 첫 샘플. 🔴 meta 에서 계산하지 않고 관측에서 뽑는다 —
+// 단계 경계 = `stage` 필드가 바뀌는 첫 샘플. meta 에서 계산하지 않고 관측에서 뽑는다 —
 // 계획된 스케줄이 아니라 실제로 그 초에 무엇이 돌았는지가 그림의 x축이다.
 function stageMarks(samples) {
     const marks = [];
@@ -324,7 +324,7 @@ function buildHtml(options, meta, samples) {
     const marks = stageMarks(samples);
     const isRamp = marks.length > 1;
 
-    // 🔴 수락된 것만. 거부는 아무것도 실행하지 않고 즉시 답하므로 전체 응답률에 섞으면 곡선이
+    // 수락된 것만. 거부는 아무것도 실행하지 않고 즉시 답하므로 전체 응답률에 섞으면 곡선이
     //    과부하 구간에서 두 자릿수 배로 뛴다 — "빨라졌다"로 읽히는 그 형태다.
     const accepted = samples.map((s) => {
         if (s.responses === undefined) return { x: s.t, y: s.rps };
@@ -380,7 +380,7 @@ function buildHtml(options, meta, samples) {
         lineChart({
             title: '지연 백분위 — 수락된 요청',
             subtitle:
-                '요청 송신 → 응답 수신 (ms) · 보간 없는 nearest-rank · 🔴 거부는 아무것도 ' +
+                '요청 송신 → 응답 수신 (ms) · 보간 없는 nearest-rank · 거부는 아무것도 ' +
                 `실행하지 않고 즉시 답하므로 이 곡선에서 빠져 있다${stageNote}`,
             warmupSeconds: warmup,
             tickDigits: 0,

@@ -1,8 +1,8 @@
 # core-purity 규칙 2 — 코어(`server/atlas/**`)에 있으면 안 되는 게임 어휘.
 # 근거: architecture-design.md §3.3(데모 게임 최소 집합) · §14(코어/계약/게임 3층) · §15.4(게이트).
 #
-# 🔴 이 목록은 지금 짧다. 데모 게임 콘텐츠가 아직 하나도 없기 때문이다.
-# 🔴 목록이 짧다는 사실이 "코어에 오염이 없다"를 뜻하지 않는다 — 이 구간에서 "검사 통과"는
+# 이 목록은 지금 짧다. 데모 게임 콘텐츠가 아직 하나도 없기 때문이다.
+# 목록이 짧다는 사실이 "코어에 오염이 없다"를 뜻하지 않는다 — 이 구간에서 "검사 통과"는
 #    "시드한 9개 용어가 없다"는 뜻뿐이다. §3.3 에 항목을 추가할 때 그 어휘를 여기 같이 넣지 않으면
 #    이 게이트는 조용히 낡은 어휘만 지키는 껍데기가 된다(§15.4).
 #
@@ -11,7 +11,7 @@
 #       실제 코드에 나타나는 형태를 잡기 위해서다. 대가로 `mob` 은 `mobility` 도 잡는다.
 #       거짓 양성이 나면 그 용어를 목록에서 빼는 것이 답이지, 매칭을 느슨하게 하는 것이 아니다.
 #
-# 🔴 일부러 넣지 않은 §3.3 어휘와 그 사유(부분 문자열 매칭이라 더 크게 물린다):
+# 일부러 넣지 않은 §3.3 어휘와 그 사유(부분 문자열 매칭이라 더 크게 물린다):
 #   move      — `std::move` · `remove` 가 코어 전역에 있다.
 #   character — 3층 식별자(§6)의 코어 개념이다. 게임 어휘가 아니다.
 #   spawn     — `boost::asio::spawn` · `co_spawn` 이 코어 I/O API 다(§9).
@@ -31,16 +31,16 @@ equip
 # **키 문자열을 모른다** — `ranking:{server_id}:exp` 는 게임의 데이터 모델이고
 # `server/game/ranking.{h,cpp}` 가 소유한다. 코어가 이 단어를 알게 되는 순간
 # 프레임워크가 게임의 순위 개념을 갖게 된다.
-# 🔴 `cache` 는 넣지 않았다 — `atlas/db` 의 prepared statement 캐시가 코어 어휘로 이미 있다.
+# `cache` 는 넣지 않았다 — `atlas/db` 의 prepared statement 캐시가 코어 어휘로 이미 있다.
 ranking
 
 # 2026-08-11, info_generator(§14) 착지와 함께 추가. `shared/datas/item.csv` 가 정의하는
 # **장착 슬롯의 이름**이다. 코어는 슬롯이 몇 개인지도, 그것이 무기인지 방어구인지도 모른다 —
 # `server/generated/info/` 는 계약(생성) 층이고, 그 데이터를 해석하는 코드는
 # `server/game/equip_service.cpp` 가 소유한다.
-# 🔴 `info` 는 넣지 않는다 — `ATLAS_LOG_INFO` 가 코어 전역에 있어 부분 문자열 매칭에 전부 걸린다.
+# `info` 는 넣지 않는다 — `ATLAS_LOG_INFO` 가 코어 전역에 있어 부분 문자열 매칭에 전부 걸린다.
 #    `item_info` · `ItemInfoRow` 는 이미 위의 `item` 이 잡는다.
-# 🔴 `slot` 도 넣지 않는다 — `atlas/core/ctx.cpp` 의 thread_local 슬롯 설명이 코어 어휘다.
+# `slot` 도 넣지 않는다 — `atlas/core/ctx.cpp` 의 thread_local 슬롯 설명이 코어 어휘다.
 weapon
 armor
 trinket

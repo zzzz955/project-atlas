@@ -9,14 +9,14 @@
     The repository has no git remote yet, so this script - not .github/workflows/ci.yml - is the
     gate that is actually exercised. Keep the two in step.
 
-    🔴 One step is NOT equivalent between the two: clang-tidy is skipped here and enforced only on
+    One step is NOT equivalent between the two: clang-tidy is skipped here and enforced only on
     linux-ci in the workflow, because clang-tidy cannot read the MSVC PCH that the local Ninja/cl
     tree produces. The skip is announced, not silent - see the step for the measurement.
 
-    🔴 The unity-OFF build is the step that catches missing #includes and ODR collisions
+    The unity-OFF build is the step that catches missing #includes and ODR collisions
     (architecture-design.md §15.1, cost 4). Never drop it to save time.
 
-    🔴 The gate loads server/.env (key names logged, values never - §5.4) so the DB-backed suites
+    The gate loads server/.env (key names logged, values never - §5.4) so the DB-backed suites
     actually run, and it FAILS if a test was Skipped while a database was reachable. ctest exits 0
     on a skip, so without this the gate printed PASS having verified nothing about the DB axis.
 
@@ -81,7 +81,7 @@ function Import-VsDevEnv {
 }
 
 function Import-DotEnv {
-    # 🔴 The DB integration suites (db_runtime_test / tx_atomicity_test / game_equip_test) read
+    # The DB integration suites (db_runtime_test / tx_atomicity_test / game_equip_test) read
     # ATLAS_DB_* from the environment and GTEST_SKIP() when it is absent. Without this the gate
     # printed [gate] PASS while every DB test was Skipped - a green run that proved nothing, which
     # is exactly what those suites' own comments say is worse than a red one. Measured 2026-08-10.
@@ -105,10 +105,10 @@ function Import-DotEnv {
         $loaded += $name
     }
 
-    # 🔴 Key names only, never values (architecture-design.md §5.4). .env holds credentials.
+    # Key names only, never values (architecture-design.md §5.4). .env holds credentials.
     if ($loaded) { Write-Host ("[gate] .env loaded (key names only): {0}" -f ($loaded -join ', ')) }
 
-    # 🔴 .env carries ATLAS_DB_HOST=mysql, the compose SERVICE name, which only resolves on the
+    # .env carries ATLAS_DB_HOST=mysql, the compose SERVICE name, which only resolves on the
     # compose network. This gate always runs on the host, where that name is nothing. Overriding
     # only a file-sourced value keeps an explicit caller-set host intact.
     if ($loaded -contains 'ATLAS_DB_HOST' -and $env:ATLAS_DB_HOST -eq 'mysql') {
@@ -146,23 +146,28 @@ if (-not $WhatIfPreference) {
     }
 }
 
-# 🔴 Both elements go inside one @(): `@(a), (b)` builds a NESTED array (element 0 is itself an
+# Both elements go inside one @(): `@(a), (b)` builds a NESTED array (element 0 is itself an
 # array), which Get-ChildItem -Path rejects with "Cannot convert 'System.Object[]' to ... 'String'".
-# 🔴 `game` belongs here too. It was missing when server/game/ landed, so an entire new source tree
+# `game` belongs here too. It was missing when server/game/ landed, so an entire new source tree
 # was outside format-check while the gate still said PASS - the same shape of hole as a Skipped test
 # counted as a pass. Every new top-level source tree must be added here in the change that creates it.
-$sourceGlobs = @((Join-Path $ServerDir 'atlas'), (Join-Path $ServerDir 'game'), (Join-Path $ServerDir 'loadgen'), (Join-Path $ServerDir 'console_client'), (Join-Path $ServerDir 'tests'))
+$sourceGlobs = @((Join-Path $ServerDir 'atlas'), (Join-Path $ServerDir 'game'), (Join-Path $ServerDir 'loadgen'), (Join-Path $ServerDir 'console_client'), (Join-Path $ServerDir 'tests'), (Join-Path $ServerDir 'generated'))
 $buildDirUnityOff = Join-Path $ServerDir "build/$UnityOffPreset"
 
-# 🔴 generated/ is deliberately absent from $sourceGlobs: generated output is never formatted or
-# tidied (cpp-style.md §7.1) because it is never hand-edited.
+# generated/ IS in $sourceGlobs, and that is a change from the original design. The generators now
+# pipe every emitted .h/.cpp through the repo .clang-format themselves (tools/cxx-format.js), so the
+# old rationale - "generated output is never formatted because it is never hand-edited" - no longer
+# holds. Two files under generated/ were also never generated at all (the hand-written
+# generated/{db,pkt}/tests/*_test.cpp), and they sat outside format-check for exactly as long as the
+# blanket exclusion stood. clang-tidy stays excluded (.clang-tidy ExcludeHeaderFilterRegex).
+# cpp-style.md §7.1.
 
 Invoke-Step 'gen:check (generated-output drift)' {
     Push-Location $RepoRoot
     try { npm run gen:check } finally { Pop-Location }
 }
 
-# 🔴 Mechanical enforcement of "the core must not know the game" (architecture-design.md §14, §15.4).
+# Mechanical enforcement of "the core must not know the game" (architecture-design.md §14, §15.4).
 # Implemented once in Node (tools/core_purity/) so this gate and .github/workflows/ci.yml run the
 # same checker - two transcriptions of the same rule drift apart silently.
 Invoke-Step 'core-purity (core must not know the game)' {
@@ -186,7 +191,7 @@ Invoke-Step 'format-check' {
     clang-format --style=file --dry-run -Werror @files
 }
 
-# 🔴 clang-tidy is CI-only (Linux/clang), NOT part of this local gate. Measured 2026-08-06:
+# clang-tidy is CI-only (Linux/clang), NOT part of this local gate. Measured 2026-08-06:
 # clang-tidy 19.1.5 aborts on the MSVC compile_commands.json because CMake's PCH step hands it
 # cmake_pch.cxx.pch, an MSVC /Yc artifact that clang cannot read:
 #     error: file '.../cmake_pch.cxx.pch' is not a valid precompiled PCH file:
@@ -219,7 +224,7 @@ Invoke-Step "test (ctest, $UnityOffPreset)" {
         $output | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) { return }
 
-        # 🔴 ctest exits 0 on a Skipped test, so the exit code alone cannot tell "everything passed"
+        # ctest exits 0 on a Skipped test, so the exit code alone cannot tell "everything passed"
         # from "the interesting half never ran". Whether that is acceptable depends entirely on
         # whether a database was there to be tested against.
         $skipped = @($output | Select-String -SimpleMatch '***Skipped').Count
@@ -235,7 +240,7 @@ Invoke-Step "test (ctest, $UnityOffPreset)" {
 
         Write-Host ("[gate] {0} test(s) Skipped: no database reachable at {1}." -f `
                     $skipped, $env:ATLAS_DB_HOST) -ForegroundColor Yellow
-        Write-Host '[gate] 🔴 The DB axis was NOT verified by this run. Start it and re-run:' -ForegroundColor Yellow
+        Write-Host '[gate] The DB axis was NOT verified by this run. Start it and re-run:' -ForegroundColor Yellow
         Write-Host '[gate]     docker compose --env-file server/.env up -d mysql' -ForegroundColor Yellow
     } finally { Pop-Location }
 }

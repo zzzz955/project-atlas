@@ -1,4 +1,4 @@
-// 🔴 테스트 픽스처다. 실제 계약이 아니다 — `shared/contracts/` 밖에 두었으므로 `npm run gen:pkt`
+// 테스트 픽스처다. 실제 계약이 아니다 — `shared/contracts/` 밖에 두었으므로 `npm run gen:pkt`
 //    가 이 파일을 읽지 않는다. ctest 의 `pkt.generator_rejects_fp_*` 가 `--contracts-dir` 로
 //    이 디렉터리를 가리켜, 부동소수점 필드를 만난 생성기가 **비제로 exit + 명확한 메시지**로
 //    죽는지 확인한다(architecture-design.md §8.4).
@@ -12,6 +12,6 @@ public sealed class FpContract
 {
     public ushort ActorSlot { get; set; }
 
-    // 🔴 이것이 거부 대상이다.
+    // 이것이 거부 대상이다.
     public float PositionX { get; set; }
 }
