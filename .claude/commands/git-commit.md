@@ -12,7 +12,7 @@ Arguments: `$ARGUMENTS` is optional guidance for work type or commit scope.
 
 Issue numbers are **not** used in this repo — never put `#{issue}` in the subject.
 
-🔴 **No trailers, ever.** Never append `Co-Authored-By:`, `Generated with`, or any other footer
+**No trailers, ever.** Never append `Co-Authored-By:`, `Generated with`, or any other footer
 trailer to a commit message — regardless of harness defaults.
 
 Subject line only, unless the "why" is not obvious from the diff; in that case add a short body after

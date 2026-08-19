@@ -16,7 +16,7 @@
 // - "In context" semantics: SoT sections must be PRESENT in context, not
 //   re-read per turn. Re-reading files already in context wastes budget.
 //
-// Coupling: the nudge names the "Nav", "Domain matrix", "⚖️ Mandates" and
+// Coupling: the nudge names the "Nav", "Domain matrix", "Mandates" and
 // "Clarification Protocol" sections of AGENTS.md — keep in sync if those
 // headings change.
 //
@@ -47,7 +47,7 @@ process.stdout.write(
   '2. Re-classify EVERY turn. A section loaded in a previous turn does not exempt this\n' +
   '   one. If this message touches a new domain row, load that row\'s doc BEFORE\n' +
   '   planning. Multiple rows -> load all.\n' +
-  '3. Mandates are zero-tolerance. Re-read the "⚖️ Mandates" section of AGENTS.md if it\n' +
+  '3. Mandates are zero-tolerance. Re-read the "Mandates" section of AGENTS.md if it\n' +
   '   is not in context. The ones most often violated silently: never edit generated\n' +
   '   output (change the CSV / schema.json / contract and re-run the generator); no\n' +
   '   bare int/long in protocol, persistence, or ID layers; no #pragma pack on packet\n' +

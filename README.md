@@ -4,7 +4,7 @@
 
 이 저장소가 주장하는 것은 **측정된 서버 동작**입니다 — 부하 하네스, 근거와 함께 지목한 병목, 빌드를 실패시키는 게이트. 설명된 아키텍처가 아닙니다. 게임 엔진이 아니고, 라이브 서비스가 아니며, 수익은 목표가 아닙니다.
 
-> 🔴 **두 목록을 일부러 떼어 놓았습니다.** [지금 도는 것](#지금-도는-것)은 다섯 개 명령으로 띄울 수 있는 코드입니다. [아직 없는 것](#아직-없는-것)은 문서 아래쪽에 설계라고 이름 붙여 두었습니다. 아키텍처 문서는 전체 토폴로지(FE / GAME / WORLD, Actor / AoI / 행동 트리, Relay)를 서술하지만 그 대부분은 **미구현**이고, 이 README는 설계를 자산으로 세지 않습니다.
+> **두 목록을 일부러 떼어 놓았습니다.** [지금 도는 것](#지금-도는-것)은 다섯 개 명령으로 띄울 수 있는 코드입니다. [아직 없는 것](#아직-없는-것)은 문서 아래쪽에 설계라고 이름 붙여 두었습니다. 아키텍처 문서는 전체 토폴로지(FE / GAME / WORLD, Actor / AoI / 행동 트리, Relay)를 서술하지만 그 대부분은 **미구현**이고, 이 README는 설계를 자산으로 세지 않습니다.
 
 ---
 
@@ -37,7 +37,7 @@
 | [`server/atlas/db/connection.cpp`](server/atlas/db/connection.cpp) | 재접속 시 statement 캐시를 **먼저, 무조건** 비웁니다. 순서가 반대면 닫힌 커넥션의 핸들을 만지게 됩니다 | 17p |
 | [`server/atlas/db/transaction.cpp`](server/atlas/db/transaction.cpp) | RAII 트랜잭션. 예외가 나가도 열린 채로 남지 않습니다 | 17p |
 | [`server/game/equip_service.cpp`](server/game/equip_service.cpp) | **DB 제약으로 걸 수 없는 규칙**("장착 칸 하나에 아이템 하나")을 두 테이블 · 세 쓰기 한 트랜잭션으로 보장. 소유자 대조를 `WHERE` 절에 넣지 않은 이유도 여기 있습니다 | 18 – 19p |
-| [`server/atlas/db/idempotency.cpp`](server/atlas/db/idempotency.cpp) | 요청 상태 기계(`None → Received → Persisted → Responded`), 커밋 전 응답을 코드가 막습니다. 🔴 라이브러리와 테스트로만 존재하고 **데모 게임에는 미연결** | 20 – 21p |
+| [`server/atlas/db/idempotency.cpp`](server/atlas/db/idempotency.cpp) | 요청 상태 기계(`None → Received → Persisted → Responded`), 커밋 전 응답을 코드가 막습니다. 라이브러리와 테스트로만 존재하고 **데모 게임에는 미연결** | 20 – 21p |
 | [`server/game/character_cache.cpp`](server/game/character_cache.cpp) | 캐시는 사본이고 원본은 항상 DB. 쓰기 후 **갱신이 아니라 삭제**. Redis 미설정 · 접속 불가 · 명령 실패는 전부 캐시 미적중과 같은 경로 | 22 – 23p |
 
 ### ④ 측정과 트러블슈팅
@@ -58,10 +58,10 @@
 | `server/atlas/net` | Boost.Asio acceptor · session · io_runner. 접속별 순차 실행, 유휴 타임아웃, accept 백오프, `TCP_NODELAY` |
 | `server/atlas/proto` | 12바이트 바이너리 프레임(`length · opcode · seq · crc32`), 필드 단위 read/write, 방향별 순번, 프레이밍 체크섬 |
 | `server/atlas/db` | MariaDB Connector/C 위에 올린 자체 ORM 런타임 — 대여 타임아웃이 있는 커넥션 풀, prepared statement, RAII 트랜잭션, **대기열 상한 + 과부하 차단**을 둔 DB 전용 스레드 풀, 멱등 키와 요청 상태 기계, 커밋 이후 보상 가드 |
-| `server/atlas/redis` | boost.redis 읽기 캐시 — read-through 캐릭터 캐시 + 쓰기 시 **무효화**, `ZADD`/`ZREVRANGE` 랭킹. Redis 다운이나 미설정은 캐시 미적중일 뿐 장애가 아닙니다. 🔴 `PUBLISH`/`SUBSCRIBE` 래퍼는 없습니다 — 서버 간 게임 트래픽을 Redis로 흘리는 것은 설계상 금지입니다 |
+| `server/atlas/redis` | boost.redis 읽기 캐시 — read-through 캐릭터 캐시 + 쓰기 시 **무효화**, `ZADD`/`ZREVRANGE` 랭킹. Redis 다운이나 미설정은 캐시 미적중일 뿐 장애가 아닙니다. `PUBLISH`/`SUBSCRIBE` 래퍼는 없습니다 — 서버 간 게임 트래픽을 Redis로 흘리는 것은 설계상 금지입니다 |
 | `server/atlas/config` · `core` | `server.ini`(커밋) / `.env`(시크릿) 분리, 시크릿은 **키 이름만** 로그에 남기고 값은 절대 남기지 않음. 고정폭 타입 별칭, 강타입 ID, 스레드 경계를 넘어 다니는 ctx 원장(추적 ID · 계정 · 캐릭터 · 트랜잭션 상태), spdlog 매크로, 이미지 build-id로 `file:line`을 복원하는 크래시 진단 |
 | `server/game` | **GAME 바이너리.** 요청/응답 opcode 3쌍(캐릭터 로드 · 장착 · 랭킹) + 캐릭터별 락 + 장착 트랜잭션 |
-| `server/generated/{info,pkt,db}` | 생성물. 🔴 손으로 고치지 않습니다. `gen:check`가 그 규칙의 기계적 강제입니다 |
+| `server/generated/{info,pkt,db}` | 생성물. 손으로 고치지 않습니다. `gen:check`가 그 규칙의 기계적 강제입니다 |
 | `server/console_client` · `server/loadgen` | 대화형 REPL 클라이언트, 부하 하네스(closed loop · open loop · ramp, JSONL 샘플, 실시간 TUI) |
 | 배포 | 다단계 Dockerfile(`builder → runtime → symbols`), 이미지 하나 + `ATLAS_ROLE` 엔트리포인트, mysql·redis 기본 포함 `compose.yaml`(서버는 `app` 프로파일 뒤) |
 
@@ -85,7 +85,7 @@ cd ..                                    # 아래는 전부 저장소 루트에�
 
 ### 1. 스택 기동
 
-자격 증명은 `server/.env`에만 있습니다. 저장소에는 비밀번호 두 개를 뺀 `.env.example`이 들어 있습니다. 🔴 `--env-file server/.env`는 **선택이 아닙니다** — compose는 `${...}` 치환을 서비스의 `env_file:`이 아니라 프로젝트 env-file에서 읽고, 필수 키는 `${VAR:?}` 형태라 하나가 비면 조용한 빈 기본값 대신 이름이 찍힌 오류가 납니다.
+자격 증명은 `server/.env`에만 있습니다. 저장소에는 비밀번호 두 개를 뺀 `.env.example`이 들어 있습니다. `--env-file server/.env`는 **선택이 아닙니다** — compose는 `${...}` 치환을 서비스의 `env_file:`이 아니라 프로젝트 env-file에서 읽고, 필수 키는 `${VAR:?}` 형태라 하나가 비면 조용한 빈 기본값 대신 이름이 찍힌 오류가 납니다.
 
 ```powershell
 cp server\.env.example server\.env      # ATLAS_DB_PASSWORD, ATLAS_DB_ROOT_PASSWORD 채우기
@@ -191,7 +191,7 @@ p50_us=476884 p90_us=536277 p99_us=591742 max_us=600765
 seeded rows removed
 ```
 
-🔴 리포트는 `npm run loadreport -- …`가 아니라 `node tools\loadreport\loadreport.js`로 실행합니다 — npm의 PowerShell 셈이 `--` 구분자를 삼켜서 스크립트가 `--in` 대신 맨 경로를 받습니다. 심어 둔 블록은 종료 시 MySQL과 Redis 양쪽에서 삭제됩니다.
+리포트는 `npm run loadreport -- …`가 아니라 `node tools\loadreport\loadreport.js`로 실행합니다 — npm의 PowerShell 셈이 `--` 구분자를 삼켜서 스크립트가 `--in` 대신 맨 경로를 받습니다. 심어 둔 블록은 종료 시 MySQL과 Redis 양쪽에서 삭제됩니다.
 
 `--ramp 32,64,128,192,256 --stage-seconds 20`을 주면 단계별 버전이 돕니다. 여기서 나온 수치를 믿기 전에 [설계 문서 §16.1](docs/design/architecture-design.md)을 먼저 읽어 주십시오 — **이 호스트에는 디스크 상태가 두 가지 있고, 그 경계를 넘나든 측정은 둘 중 어느 쪽도 측정한 것이 아닙니다.**
 
@@ -208,14 +208,14 @@ powershell -NoProfile -File server\scripts\ci-gate.ps1
 | `gen:check` | 생성물이 여전히 입력과 일치함. "생성물을 손으로 고치지 않는다"의 기계적 강제입니다 — 문서 규칙만으로는 결국 손으로 고친 생성물이 커밋됩니다 |
 | `core-purity` | `server/atlas/**`가 게임 계약 헤더를 include 하지 않고 데모 게임 어휘를 담지 않음. "코어는 게임을 몰라야 한다"의 기계적 강제 |
 | `format-check` | `clang-format` |
-| `clang-tidy` | 🔴 **로컬에서는 이유를 출력하고 건너뜁니다.** Ninja/`cl` 트리가 내놓는 MSVC 프리컴파일 헤더를 clang-tidy가 읽지 못해, 이 단계는 Linux CI에서만 채점됩니다 |
+| `clang-tidy` | **로컬에서는 이유를 출력하고 건너뜁니다.** Ninja/`cl` 트리가 내놓는 MSVC 프리컴파일 헤더를 clang-tidy가 읽지 못해, 이 단계는 Linux CI에서만 채점됩니다 |
 | `build` (unity ON) | 빠른 개발 구성 |
-| `build` (unity OFF) | 누락된 `#include`와 ODR 충돌. unity 빌드는 같은 배치의 형제 파일이 헤더를 대신 공급해 이 둘을 가립니다 — 🔴 이 단계는 절대 건너뛰지 않습니다 |
-| `test` | `ctest`로 GoogleTest 실행. 🔴 게이트가 `server/.env`를 로드하고, **DB에 접속 가능한데도 테스트가 건너뛰어졌으면 실패 처리**합니다 — `ctest`는 skip에도 0을 반환하므로, 이 규칙이 없을 때 아무것도 증명하지 않은 채 PASS를 찍고 있었습니다 |
+| `build` (unity OFF) | 누락된 `#include`와 ODR 충돌. unity 빌드는 같은 배치의 형제 파일이 헤더를 대신 공급해 이 둘을 가립니다 — 이 단계는 절대 건너뛰지 않습니다 |
+| `test` | `ctest`로 GoogleTest 실행. 게이트가 `server/.env`를 로드하고, **DB에 접속 가능한데도 테스트가 건너뛰어졌으면 실패 처리**합니다 — `ctest`는 skip에도 0을 반환하므로, 이 규칙이 없을 때 아무것도 증명하지 않은 채 PASS를 찍고 있었습니다 |
 
 최근 로컬 실행: **140/140 통과, 0 skip, `[gate] PASS`.**
 
-🔴 **두 게이트는 양방향으로 서로를 대체하지 못합니다.**
+**두 게이트는 양방향으로 서로를 대체하지 못합니다.**
 
 - **CI에는 MySQL 서비스가 없습니다.** 모든 DB · Redis 스위트가 거기서 건너뛰므로, 영속성 축은 접속 가능한 DB를 상대로 한 **로컬** 게이트 실행이 증명합니다 — 위의 "skip은 실패" 규칙이 그래서 있습니다. CI 배지가 초록이어도 ORM에 대해서는 아무 말도 하지 않습니다.
 - **로컬 게이트는 `clang-tidy`를 돌리지 않습니다.** 네이밍 · `bugprone` · `modernize` 위반은 CI에서만 드러납니다. `server\scripts\tidy-prefilter.ps1`이 PCH를 걷어낸 `compile_commands.json` 사본 위에서 도는 로컬 사전 필터이긴 하지만, 의도적으로 **게이트가 아닙니다** — 항상 0으로 종료하고, 두 툴체인은 양방향으로 어긋납니다. CI의 libstdc++는 MSVC STL이 보고하지 않는 optional 접근을 잡고, CI는 이 스윕만 채점할 수 있는 `#if defined(_WIN32)` 분기를 아예 컴파일하지 않습니다.
@@ -229,7 +229,7 @@ powershell -NoProfile -File server\scripts\ci-gate.ps1
 
 아래 수치는 [설계 문서 §16.1](docs/design/architecture-design.md)에서 인용했습니다. **측정 조건은 결과의 일부이며 결과와 분리되지 않습니다.**
 
-**조건.** i5-12600KF(10코어 / 16논리) · 32 GB · Windows 11. 서버는 Docker Desktop / WSL2(16 vCPU) 컨테이너, 이미지는 `linux-release` 프리셋(최적화) 빌드. MySQL 8.4.10은 같은 호스트의 컨테이너에서 이미지 기본값(`innodb_flush_log_at_trx_commit=1`, `sync_binlog=1`, `log_bin=ON`, `innodb_flush_method=O_DIRECT`). 서버 런타임은 `io_workers=16`, `db_threads=2`, `db_pool_size=4`, DB 대기열 상한 128. 🔴 **부하 클라이언트는 Debug · 비최적화 빌드**(`windows-ci`가 유일한 Windows 프리셋이고 Release 프리셋이 없습니다)이며, **서버 · DB와 같은 호스트에서** 루프백으로 돕니다. 모든 표는 독립 실행 3회 이상의 중앙값과 관측된 min–max이고, 실행 전후로 호스트 `fsync` 프로브를 뜹니다. 중간에 상태 경계를 넘은 실행은 버렸고, 버렸다는 사실도 기록했습니다.
+**조건.** i5-12600KF(10코어 / 16논리) · 32 GB · Windows 11. 서버는 Docker Desktop / WSL2(16 vCPU) 컨테이너, 이미지는 `linux-release` 프리셋(최적화) 빌드. MySQL 8.4.10은 같은 호스트의 컨테이너에서 이미지 기본값(`innodb_flush_log_at_trx_commit=1`, `sync_binlog=1`, `log_bin=ON`, `innodb_flush_method=O_DIRECT`). 서버 런타임은 `io_workers=16`, `db_threads=2`, `db_pool_size=4`, DB 대기열 상한 128. **부하 클라이언트는 Debug · 비최적화 빌드**(`windows-ci`가 유일한 Windows 프리셋이고 Release 프리셋이 없습니다)이며, **서버 · DB와 같은 호스트에서** 루프백으로 돕니다. 모든 표는 독립 실행 3회 이상의 중앙값과 관측된 min–max이고, 실행 전후로 호스트 `fsync` 프로브를 뜹니다. 중간에 상태 경계를 넘은 실행은 버렸고, 버렸다는 사실도 기록했습니다.
 
 **① 이 호스트에는 디스크 상태가 둘 있고, 그 사실이 나머지 전부를 압도합니다.**
 
@@ -252,7 +252,7 @@ powershell -NoProfile -File server\scripts\ci-gate.ps1
 
 동시성 64배, 처리량 ±2 %, 지연 63배. Little's Law가 전 구간에서 **2.1 %** 오차로 닫힙니다 — 무릎은 동시성 **2**에 있고, 그 뒤는 전부 대기열입니다.
 
-**③ 병목을 근거와 함께 지목합니다.** CPU가 아니고(요청측 CPU는 두 상태에서 동일하며 16코어 중 0.4코어), 락 경합이 아니고(`Innodb_row_lock_waits = 0`, 54회 전부), InnoDB 스톨도 아닙니다(`Innodb_log_waits = 0`, 더티 페이지 평탄). **`db_threads = 2` × 커밋당 fsync 2.1회 × 그 시점의 fsync 지연**입니다. `redo`와 `binlog`가 각각 sync 하고, MySQL은 동시 트랜잭션을 2개 넘게 본 적이 없어 group commit이 묶을 것이 없습니다. 🔴 **튜닝 라운드는 돌리지 않았고 주장하지도 않습니다** — 이것은 진단이지 최적화가 아닙니다.
+**③ 병목을 근거와 함께 지목합니다.** CPU가 아니고(요청측 CPU는 두 상태에서 동일하며 16코어 중 0.4코어), 락 경합이 아니고(`Innodb_row_lock_waits = 0`, 54회 전부), InnoDB 스톨도 아닙니다(`Innodb_log_waits = 0`, 더티 페이지 평탄). **`db_threads = 2` × 커밋당 fsync 2.1회 × 그 시점의 fsync 지연**입니다. `redo`와 `binlog`가 각각 sync 하고, MySQL은 동시 트랜잭션을 2개 넘게 본 적이 없어 group commit이 묶을 것이 없습니다. **튜닝 라운드는 돌리지 않았고 주장하지도 않습니다** — 이것은 진단이지 최적화가 아닙니다.
 
 **④ 고정 레이트에서 유저가 겪는 것**(open loop, 64접속):
 
@@ -269,7 +269,7 @@ powershell -NoProfile -File server\scripts\ci-gate.ps1
 | 3 | 192 | 114.9 req/s | **99.28 %** | 1111 ms |
 | 4 | 256 | 111.0 req/s | **99.43 %** | 1145 ms |
 
-상한 위에서는 수용분 p50이 `N`을 따라가기를 멈추고 `대기열 상한 ÷ 처리량`에 고정됩니다(오차 0.3 %, 0.7 %) — 대기열에 뚜껑이 덮인 것입니다. 🔴 **과부하 차단은 공짜가 아닙니다**: 유효 처리량이 14 % 떨어졌습니다. 거절도 프레임 인코딩과 소켓 쓰기 비용을 쓰고, 이 하네스에는 백오프가 없어 거절마다 즉시 다음 요청으로 답하기 때문입니다. 클라이언트가 센 거절 수와 서버가 센 거절 수는 **4회 전부 정확히 일치**했습니다(불일치 0건 · 676,875 · 646,641 · 613,163 · 674,276).
+상한 위에서는 수용분 p50이 `N`을 따라가기를 멈추고 `대기열 상한 ÷ 처리량`에 고정됩니다(오차 0.3 %, 0.7 %) — 대기열에 뚜껑이 덮인 것입니다. **과부하 차단은 공짜가 아닙니다**: 유효 처리량이 14 % 떨어졌습니다. 거절도 프레임 인코딩과 소켓 쓰기 비용을 쓰고, 이 하네스에는 백오프가 없어 거절마다 즉시 다음 요청으로 답하기 때문입니다. 클라이언트가 센 거절 수와 서버가 센 거절 수는 **4회 전부 정확히 일치**했습니다(불일치 0건 · 676,875 · 646,641 · 613,163 · 674,276).
 
 ---
 
@@ -282,9 +282,9 @@ npm run gen:all      # info → db → pkt: 기획 데이터, 그다음 스키�
 npm run gen:check    # 드리프트 게이트. CI 게이트의 첫 단계입니다
 ```
 
-🔴 `server/generated/` 아래는 손으로 고치지 않습니다. `shared/contracts/*.cs`, `shared/datas/*.csv`, `server/db/schema.json`을 고치고 생성기를 다시 돌리십시오.
+`server/generated/` 아래는 손으로 고치지 않습니다. `shared/contracts/*.cs`, `shared/datas/*.csv`, `server/db/schema.json`을 고치고 생성기를 다시 돌리십시오.
 
-🔴 **아직 게임 1종에만 적용했습니다.** 2종을 붙여 봐야 재사용 가능하다고 말할 수 있습니다.
+**아직 게임 1종에만 적용했습니다.** 2종을 붙여 봐야 재사용 가능하다고 말할 수 있습니다.
 
 ---
 
@@ -295,19 +295,19 @@ npm run gen:check    # 드리프트 게이트. CI 게이트의 첫 단계입니�
 | 미구현 | 상태 |
 |---|---|
 | **FE · WORLD 바이너리** | 설계 완료(토폴로지 · 레지스트리 · 하트비트 · 동적 attach/detach). 엔트리포인트는 `ATLAS_ROLE=fe`/`world`를 존재하지 않는 바이너리로 매핑하고, 있는 척하는 대신 69로 종료합니다 |
-| **Actor / AoI / 행동 트리 월드 루프** | 🔴 설계만 했습니다. 이 저장소에 틱 루프도, 공간 모델도, BT 엔진도 없습니다. 이동과 채팅은 핸들러 없는 생성 패킷 계약으로만 존재합니다 |
+| **Actor / AoI / 행동 트리 월드 루프** | 설계만 했습니다. 이 저장소에 틱 루프도, 공간 모델도, BT 엔진도 없습니다. 이동과 채팅은 핸들러 없는 생성 패킷 계약으로만 존재합니다 |
 | **Relay / Matching / InterWorld** | Phase 3. 이음매만 고정해 두었습니다 — WORLD ↔ WORLD 직접 통신 금지, 그 우회로인 Redis pub/sub도 금지 |
 | **세션 키 HMAC(무결성 2계층)** | 세션 키가 필요하고, 그건 인증 핸드셰이크가 필요합니다. 프레임 헤더에 예약 필드를 두지 않았습니다 — 0으로 채운 필드는 보호처럼 보이기 때문입니다 |
 | **JWKS / platform-auth 연동** | 설계 완료. `ATLAS_JWKS_URL`은 읽기만 하고 쓰지 않습니다 |
 | **서버 치트 콘솔 · 패킷 로그** | 설계 완료, 미구현 |
-| **멱등성 저장소 영속화** | 🔴 인메모리입니다. 프로덕션이라면 테이블이 들어갈 자리인데, 데모 테이블 예산을 이미 다 썼습니다 |
+| **멱등성 저장소 영속화** | 인메모리입니다. 프로덕션이라면 테이블이 들어갈 자리인데, 데모 테이블 예산을 이미 다 썼습니다 |
 | **CD** | Phase 1 범위 밖으로 결정. 배포는 단일 호스트의 `compose`에서 끝납니다 |
 
 ---
 
 ## 문서
 
-🔴 `docs/` 아래는 전부 **한국어**입니다. `AGENTS.md`(영문)가 라우팅 인덱스입니다.
+`docs/` 아래는 전부 **한국어**입니다. `AGENTS.md`(영문)가 라우팅 인덱스입니다.
 
 | 문서 | 내용 |
 |---|---|

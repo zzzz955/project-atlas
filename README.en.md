@@ -7,7 +7,7 @@ behaviour — a load harness, a bottleneck named with its evidence, and a gate t
 rather than described architecture. It is not a game engine, not a live service, and revenue is
 explicitly not a goal.
 
-> 🔴 **Two lists, deliberately kept apart.** [What runs](#what-runs-today) is code you can start in
+> **Two lists, deliberately kept apart.** [What runs](#what-runs-today) is code you can start in
 > five commands. [What is only designed](#not-built-yet) is at the bottom, named as design. The
 > architecture doc describes the whole topology (FE / GAME / WORLD, Actor / AoI / behaviour trees,
 > Relay); most of that is **not implemented**, and this README never counts a design as an asset.
@@ -19,10 +19,10 @@ explicitly not a goal.
 | `server/atlas/net` | Boost.Asio acceptor · session · io_runner. Strand-serialised sessions, idle timeout, accept backoff, `TCP_NODELAY` |
 | `server/atlas/proto` | 12-byte binary frame (`length · opcode · seq · crc32`), per-field write/read (no `#pragma pack`), per-direction sequence numbers, framing checksum |
 | `server/atlas/db` | Custom ORM runtime over MariaDB Connector/C: connection pool with lease timeout, prepared statements, transaction RAII, a dedicated DB thread pool with a **bounded queue + load shedding**, idempotency keys and a `None → Received → Persisted → Responded` request state machine, post-commit compensation guard |
-| `server/atlas/redis` | boost.redis read cache: read-through character cache with write **invalidation**, `ZADD`/`ZREVRANGE` ranking. Redis down or unconfigured is a cache miss, never an outage. 🔴 No `PUBLISH`/`SUBSCRIBE` wrapper exists — inter-server game traffic over Redis is forbidden by design |
+| `server/atlas/redis` | boost.redis read cache: read-through character cache with write **invalidation**, `ZADD`/`ZREVRANGE` ranking. Redis down or unconfigured is a cache miss, never an outage. No `PUBLISH`/`SUBSCRIBE` wrapper exists — inter-server game traffic over Redis is forbidden by design |
 | `server/atlas/config` · `core` | `server.ini` (committed) / `.env` (secrets) split, secret **key names** logged and values never; fixed-width type aliases, strong-typed ids, a ctx ledger (trace / account / character / transaction state) carried across thread boundaries, spdlog macros, crash diagnostics that resolve to `file:line` with the image's build-id |
 | `server/game` | **The GAME binary.** Three request/response opcode pairs — character load, equip, ranking — plus the per-character lock and the equip transaction |
-| `server/generated/{info,pkt,db}` | Generator output. 🔴 Never hand-edited; `gen:check` is the mechanical enforcement |
+| `server/generated/{info,pkt,db}` | Generator output. Never hand-edited; `gen:check` is the mechanical enforcement |
 | `server/console_client` · `server/loadgen` | An interactive REPL client, and the load harness (closed loop · open loop · ramp, JSONL samples, live TUI) |
 | deploy | Multi-stage Dockerfile (`builder → runtime → symbols`), one image + `ATLAS_ROLE` entrypoint, `compose.yaml` with mysql + redis by default and the server behind the `app` profile |
 
@@ -52,7 +52,7 @@ Windows Release preset, and §16.1 records that as a condition of every number i
 ### 1. Bring the stack up
 
 Credentials live only in `server/.env`; the repo ships `.env.example` with everything but the two
-passwords. 🔴 `--env-file server/.env` is **not optional** — compose reads `${...}` substitutions
+passwords. `--env-file server/.env` is **not optional** — compose reads `${...}` substitutions
 from the project env-file, not from a service's `env_file:`, and the required keys are `${VAR:?}` so
 a missing one is a named error rather than a silent empty default.
 
@@ -177,7 +177,7 @@ p50_us=476884 p90_us=536277 p99_us=591742 max_us=600765
 seeded rows removed
 ```
 
-🔴 The report is invoked as `node tools\loadreport\loadreport.js`, not `npm run loadreport -- …`:
+The report is invoked as `node tools\loadreport\loadreport.js`, not `npm run loadreport -- …`:
 npm's PowerShell shim drops the `--` separator and the script then sees a bare path instead of
 `--in`. The seeded block is deleted on exit, in MySQL and in Redis both.
 
@@ -196,14 +196,14 @@ powershell -NoProfile -File server\scripts\ci-gate.ps1
 | `gen:check` | Generated output still matches its input. The mechanical enforcement of "never edit generated output" — a doc rule alone always ends with a hand-edited generated file committed |
 | `core-purity` | `server/atlas/**` includes no game-contract header and contains no demo-game vocabulary. The mechanical enforcement of "the core must not know the game" |
 | `format-check` | `clang-format` |
-| `clang-tidy` | 🔴 **Skipped locally, with a printed reason.** clang-tidy cannot read the MSVC precompiled header the Ninja/`cl` tree emits, so this step grades on Linux CI only |
+| `clang-tidy` | **Skipped locally, with a printed reason.** clang-tidy cannot read the MSVC precompiled header the Ninja/`cl` tree emits, so this step grades on Linux CI only |
 | `build` (unity ON) | The fast dev configuration |
-| `build` (unity OFF) | Missing `#include`s and ODR collisions. Unity builds hide both by letting a sibling in the same batch supply a header — 🔴 never skip this one |
-| `test` | GoogleTest via `ctest`. 🔴 The gate loads `server/.env` and **fails when a test was skipped while the database was reachable** — `ctest` exits 0 on a skip, so without this it printed PASS having proven nothing |
+| `build` (unity OFF) | Missing `#include`s and ODR collisions. Unity builds hide both by letting a sibling in the same batch supply a header — never skip this one |
+| `test` | GoogleTest via `ctest`. The gate loads `server/.env` and **fails when a test was skipped while the database was reachable** — `ctest` exits 0 on a skip, so without this it printed PASS having proven nothing |
 
 Last local run: **140/140 passed, 0 skipped, `[gate] PASS`.**
 
-🔴 **The two gates are not equivalent, in both directions.**
+**The two gates are not equivalent, in both directions.**
 
 - **CI has no MySQL service.** Every DB and Redis suite skips there, so the persistence axis is
   proven by a **local** gate run against a reachable database — that is what the skip-is-failure rule
@@ -228,7 +228,7 @@ result and are not separable from it.**
 Docker Desktop / WSL2 (16 vCPU), image built from the `linux-release` preset (optimised). MySQL
 8.4.10 in a container on the same host at image defaults — `innodb_flush_log_at_trx_commit=1`,
 `sync_binlog=1`, `log_bin=ON`, `innodb_flush_method=O_DIRECT`. Server runtime `io_workers=16`,
-`db_threads=2`, `db_pool_size=4`, DB queue cap 128. 🔴 **The load client is a Debug, non-optimised
+`db_threads=2`, `db_pool_size=4`, DB queue cap 128. **The load client is a Debug, non-optimised
 build** (`windows-ci` is the only Windows preset; there is no Windows Release preset) running
 natively **on the same host as the server and the database**, over loopback. Every table is a
 median over ≥3 independent runs with the observed min–max, and a host `fsync` probe is taken before
@@ -263,7 +263,7 @@ regimes and totals 0.4 of 16 cores), not lock contention (`Innodb_row_lock_waits
 runs), not InnoDB stalls (`Innodb_log_waits = 0`, flat dirty pages). It is
 **`db_threads = 2` × 2.1 fsyncs per commit × the fsync latency of the moment**: `redo` and `binlog`
 each sync, and MySQL never sees more than 2 concurrent transactions, so group commit has nothing to
-batch. 🔴 **No tuning round was run and none is claimed** — this is a diagnosis, not an optimisation.
+batch. **No tuning round was run and none is claimed** — this is a diagnosis, not an optimisation.
 
 **④ What a user experiences at a fixed rate** (open loop, 64 connections):
 
@@ -281,7 +281,7 @@ batch. 🔴 **No tuning round was run and none is claimed** — this is a diagno
 | 4 | 256 | 111.0 req/s | **99.43 %** | 1145 ms |
 
 Above the ceiling, accepted p50 stops tracking `N` and pins to `queue cap ÷ throughput` (0.3 % and
-0.7 % error) — the queue got a lid. 🔴 **Load shedding is not free**: effective throughput fell 14 %,
+0.7 % error) — the queue got a lid. **Load shedding is not free**: effective throughput fell 14 %,
 because a rejection still costs frame encoding and a socket write, and this harness has no backoff
 so it answers each rejection instantly with another request. Client-counted and server-counted
 rejections matched **exactly, 0 discrepancy, across all four runs** (676 875 · 646 641 · 613 163 ·
@@ -297,7 +297,7 @@ npm run gen:all      # info → db → pkt: input data, then schema, then packet
 npm run gen:check    # drift gate; the first step of the CI gate
 ```
 
-🔴 Nothing under `server/generated/` is edited by hand. Change `shared/contracts/*.cs`,
+Nothing under `server/generated/` is edited by hand. Change `shared/contracts/*.cs`,
 `shared/datas/*.csv` or `server/db/schema.json` and re-run the generator.
 
 ## Not built yet
@@ -307,17 +307,17 @@ Named here so that nothing above has to be discounted.
 | not implemented | status |
 |---|---|
 | **FE and WORLD binaries** | Designed (topology, registry, heartbeat, dynamic attach/detach). The entrypoint maps `ATLAS_ROLE=fe`/`world` to a binary that does not exist and exits 69 rather than pretending |
-| **Actor / AoI / behaviour-tree world loop** | 🔴 Designed only. There is no tick loop, no spatial model and no BT engine in this repo. Movement and chat exist as generated packet contracts with no handler behind them |
+| **Actor / AoI / behaviour-tree world loop** | Designed only. There is no tick loop, no spatial model and no BT engine in this repo. Movement and chat exist as generated packet contracts with no handler behind them |
 | **Relay / Matching / InterWorld** | Phase 3. Only the seam is fixed: WORLD ↔ WORLD direct traffic is forbidden, and Redis pub/sub is forbidden as the bypass around it |
 | **Session-key HMAC (integrity layer 2)** | Needs a session key, which needs the auth handshake. The frame header has no reserved field — a zero-filled one would look like protection |
 | **JWKS / platform-auth integration** | Designed; `ATLAS_JWKS_URL` is read and unused |
 | **Server cheat console · packet log** | Designed, not built |
-| **Idempotency store persistence** | 🔴 In memory. Production puts a table here; the demo table budget was already spent |
+| **Idempotency store persistence** | In memory. Production puts a table here; the demo table budget was already spent |
 | **CD** | Out of scope for Phase 1 by decision. Deployment ends at `compose` on a single host |
 
 ## Documentation
 
-🔴 Everything under `docs/` is **Korean**. `AGENTS.md` (English) is the routing index.
+Everything under `docs/` is **Korean**. `AGENTS.md` (English) is the routing index.
 
 | doc | what |
 |---|---|

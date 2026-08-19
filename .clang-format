@@ -1,21 +1,41 @@
-# Base = Google: the project's naming rules (PascalCase functions, kPascalCase constants,
-# trailing-underscore members — cpp-style.md §3) are Google's, so the format base and the
-# convention it enforces agree instead of fighting each other.
+# Base = Google: 이 프로젝트의 네이밍 규칙(PascalCase 함수, kPascalCase 상수,
+# 멤버 뒤 언더스코어 - cpp-style.md 3장)이 Google 규칙과 같아서,
+# 포맷 기준과 컨벤션이 서로 싸우지 않음.
+# 단, 아래 "레이아웃" 항목은 Google을 덮어쓰는 이 프로젝트 고유 규칙.
 ---
 Language: Cpp
 BasedOnStyle: Google
 
-# cpp-style.md §1 — C++20.
+# cpp-style.md 1장 - C++20
 Standard: c++20
 
-# cpp-style.md §2.3 — namespace body starts at indent 0 (no indent level burned),
-# and the closing brace gets `}  // namespace atlas` automatically.
+# cpp-style.md 2.3 - 네임스페이스 본문은 들여쓰기 0(인덴트 한 단계를 낭비하지 않음),
+# 닫는 중괄호에는 `}  // namespace atlas` 가 자동으로 붙음
 NamespaceIndentation: None
 FixNamespaceComments: true
 
 ColumnLimit: 100
 
-# Matches .editorconfig (4 spaces). AccessModifierOffset follows IndentWidth so that
-# access specifiers land back at column 0.
+# .editorconfig(4칸)와 일치. 접근 지정자가 열 0으로 돌아오도록
+# AccessModifierOffset은 IndentWidth를 따라감
 IndentWidth: 4
 AccessModifierOffset: -4
+
+# ============================================================================
+# 레이아웃 - cpp-style.md 7.1
+# ============================================================================
+
+# 중괄호는 항상 다음 줄 (Allman)
+BreakBeforeBraces: Allman
+
+# 괄호 안쪽 공백: `for ( Int32 i = 0; i < n; ++i )`, `Foo( a, b )`
+# 빈 괄호 `main()` 과 C 스타일 캐스트는 제외
+SpacesInParens: Custom
+SpacesInParensOptions:
+  InConditionalStatements: true
+  InCStyleCasts: false
+  InEmptyParentheses: false
+  Other: true
+
+# 꺾쇠 안쪽 공백: `std::vector< Int32 >`
+SpacesInAngles: Always

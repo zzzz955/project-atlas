@@ -7,7 +7,7 @@ Checks: >
   -modernize-use-trailing-return-type,
   -bugprone-easily-swappable-parameters
 
-# 🔴 The two exclusions above are decisions, not concessions (architecture-design.md §15.5h).
+# The two exclusions above are decisions, not concessions (architecture-design.md §15.5h).
 # They landed on 2026-08-11, the first run where clang-tidy 19 actually graded this repo.
 #
 # -modernize-use-trailing-return-type: this project writes LEADING return types. The style base is
@@ -33,7 +33,7 @@ CheckOptions:
   - { key: readability-identifier-naming.MacroDefinitionCase,   value: UPPER_CASE }
   - { key: readability-identifier-naming.MacroDefinitionPrefix, value: ATLAS_ }
   - { key: readability-identifier-naming.GlobalConstantPrefix,  value: k }
-  # 🔴 cpp-style.md §3 says `constexpr` is kPascalCase REGARDLESS of scope, and without this pair
+  # cpp-style.md §3 says `constexpr` is kPascalCase REGARDLESS of scope, and without this pair
   # the rule only held at namespace scope. readability-identifier-naming resolves an identifier at
   # the most specific level that has ANY option set: a namespace-scope `constexpr` stopped at
   # GlobalConstant (prefix above, so `kMaxPayload` passed), but a function-local one found nothing
@@ -41,6 +41,6 @@ CheckOptions:
   # convention was inverted for locals, which is why `kSentinel` and `kPosterThreads` were errors.
   - { key: readability-identifier-naming.ConstexprVariableCase,   value: CamelCase }
   - { key: readability-identifier-naming.ConstexprVariablePrefix, value: k }
-  # 🔴 Encodes cpp-style.md §5 instead of switching the check off: the ATLAS_ family (log · throw ·
+  # Encodes cpp-style.md §5 instead of switching the check off: the ATLAS_ family (log · throw ·
   # check) is the sanctioned macro set, and everything outside it stays a violation.
   - { key: cppcoreguidelines-macro-usage.AllowedRegexp,         value: '^ATLAS_' }
