@@ -52,8 +52,8 @@ constexpr atlas::Seconds kCounterInterval{ 5 };
 
 }  // namespace
 
-int main( int argc, char** argv )
-{  // NOLINT - 표준이 main 의 시그니처를 고정함
+int main( int argc, char** argv )  // NOLINT - 표준이 main 의 시그니처를 고정함
+{
     try
     {
         const atlas::ServerConfig config =

@@ -37,8 +37,8 @@ IoRunner::~IoRunner()
             JoinWorkers();
         }
     }
-    catch ( ... )
-    {  // NOLINT - noexcept 종료 경로엔 보고할 곳이 없음
+    catch ( ... )  // NOLINT - noexcept 종료 경로엔 보고할 곳이 없음
+    {
     }
 }
 

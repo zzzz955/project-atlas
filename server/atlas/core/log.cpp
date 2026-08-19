@@ -112,8 +112,8 @@ void LogShutdown() noexcept
         {
             g_logger_owner->flush();
         }
-        catch ( ... )
-        {  // NOLINT - 종료 경로는 throw 하면 안 됨
+        catch ( ... )  // NOLINT - 종료 경로는 throw 하면 안 됨
+        {
         }
         g_logger_owner.reset();
     }
@@ -131,8 +131,8 @@ void LogFlush() noexcept
     {
         logger->flush();
     }
-    catch ( ... )
-    {  // NOLINT - LogShutdown 참고
+    catch ( ... )  // NOLINT - LogShutdown 참고
+    {
     }
 }
 
@@ -183,8 +183,8 @@ void LogWrite( LogLevel level, std::string_view message, std::source_location lo
         logger->log( where, ToSpdLevel( level ),
                      spdlog::string_view_t{ line.data(), line.size() } );
     }
-    catch ( ... )
-    {  // NOLINT - 로거 실패가 호출자를 끌고 내려가면 안 됨
+    catch ( ... )  // NOLINT - 로거 실패가 호출자를 끌고 내려가면 안 됨
+    {
     }
 }
 

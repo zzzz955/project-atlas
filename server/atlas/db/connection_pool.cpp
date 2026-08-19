@@ -76,8 +76,8 @@ ConnectionPool::~ConnectionPool()
             ATLAS_LOG_ERROR( "db connection pool destroyed with {} connection(s) still leased",
                              connections_.size() - free_.size() );
         }
-        catch ( ... )
-        {  // NOLINT - 더는 보고할 곳이 없음
+        catch ( ... )  // NOLINT - 더는 보고할 곳이 없음
+        {
         }
     }
 }

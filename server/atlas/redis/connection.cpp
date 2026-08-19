@@ -167,8 +167,8 @@ void RedisConnection::Stop() noexcept
                              kStopBudget.count() );
         }
     }
-    catch ( ... )
-    {  // NOLINT - noexcept 해체 경로는 보고할 곳이 없음
+    catch ( ... )  // NOLINT - noexcept 해체 경로는 보고할 곳이 없음
+    {
     }
 }
 

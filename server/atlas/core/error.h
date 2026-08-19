@@ -103,8 +103,8 @@ private:
                 on_failure_( failure.what() );
             }
         }
-        catch ( ... )
-        {  // NOLINT - 더 보고할 곳이 없음
+        catch ( ... )  // NOLINT - 더 보고할 곳이 없음
+        {
         }
     }
 
@@ -118,8 +118,8 @@ private:
                 on_failure_( "non-std exception" );
             }
         }
-        catch ( ... )
-        {  // NOLINT - 더 보고할 곳이 없음
+        catch ( ... )  // NOLINT - 더 보고할 곳이 없음
+        {
         }
     }
 

@@ -320,8 +320,8 @@ void Report( const atlas_loadgen::LoadOptions& options, const atlas_loadgen::Loa
 
 }  // namespace
 
-int main( int argc, char** argv )
-{  // NOLINT - main 시그니처는 표준이 정함
+int main( int argc, char** argv )  // NOLINT - main 시그니처는 표준이 정함
+{
     try
     {
         // 콘솔만, Warn 이상. 측정 중 디스크를 놓고 경쟁할 로그 파일을 늘리지 않음

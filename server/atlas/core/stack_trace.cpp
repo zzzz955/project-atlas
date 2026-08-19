@@ -55,8 +55,8 @@ void EnsureLocalSymbolPath() noexcept
                 std::ignore = ::SetEnvironmentVariableW( L"_NT_SYMBOL_PATH", directory.c_str() );
             } );
     }
-    catch ( ... )
-    {  // NOLINT - 진단이 원래 실패를 덮어쓰면 안 됨
+    catch ( ... )  // NOLINT - 진단이 원래 실패를 덮어쓰면 안 됨
+    {
     }
 }
 #else
@@ -90,8 +90,8 @@ std::string CaptureStackTrace( std::size_t skip ) noexcept
         // 이 함수 자신의 프레임 1개. 호출자는 이 API 위쪽만 셈
         return FormatStackTrace( boost::stacktrace::stacktrace( skip + 1, kMaxStackFrames ) );
     }
-    catch ( ... )
-    {  // NOLINT - 진단이 원래 실패를 덮어쓰면 안 됨
+    catch ( ... )  // NOLINT - 진단이 원래 실패를 덮어쓰면 안 됨
+    {
         return {};
     }
 }
@@ -103,8 +103,8 @@ std::string CaptureCurrentExceptionStackTrace() noexcept
         EnsureLocalSymbolPath();
         return FormatStackTrace( boost::stacktrace::stacktrace::from_current_exception() );
     }
-    catch ( ... )
-    {  // NOLINT - CaptureStackTrace 참고
+    catch ( ... )  // NOLINT - CaptureStackTrace 참고
+    {
         return {};
     }
 }

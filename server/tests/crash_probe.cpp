@@ -13,8 +13,8 @@
 #include <Windows.h>
 #endif
 
-int main( int argc, char** argv )
-{  // NOLINT: main 시그니처는 표준이 고정
+int main( int argc, char** argv )  // NOLINT: main 시그니처는 표준이 고정
+{
     const std::filesystem::path directory =
         argc > 1 ? std::filesystem::path( argv[1] ) : std::filesystem::path( "crash-probe" );
 

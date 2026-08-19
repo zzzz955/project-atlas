@@ -180,8 +180,8 @@ void Connection::Rollback() noexcept
         {
             ATLAS_LOG_ERROR( "db rollback failed: {}", mysql_error( handle_ ) );
         }
-        catch ( ... )
-        {  // NOLINT - 더는 보고할 곳이 없음
+        catch ( ... )  // NOLINT - 더는 보고할 곳이 없음
+        {
         }
     }
     RestoreAutoCommit();
@@ -195,8 +195,8 @@ void Connection::RestoreAutoCommit() noexcept
         {
             ATLAS_LOG_ERROR( "db autocommit restore failed: {}", mysql_error( handle_ ) );
         }
-        catch ( ... )
-        {  // NOLINT - Rollback 참고
+        catch ( ... )  // NOLINT - Rollback 참고
+        {
         }
     }
 }

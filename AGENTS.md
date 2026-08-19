@@ -150,9 +150,12 @@ the step moved to `linux-ci` instead. Undo when clang-cl lands locally. `AD §15
 cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them via
 `Common7\Tools\VsDevCmd.bat -arch=amd64` (both `setup.bat` and `ci-gate.ps1` do this themselves).
 The last green run is `31731260372` (2026-08-13, `ecb65da`, 10m10s; `clang-tidy` alone is 431s =
-71% of it). **CI is red since run `32215352292` (2026-08-19, `d45425c`)** — `gen:check` ran before
-`install toolchain` and resolved the runner's preinstalled `clang-format` 18. Fixed in the tree, not
-yet confirmed by a run id (`AD §15.5k`). The first green with `clang-tidy` 19 actually grading was run `31537924701` (`6be480d`)
+71% of it). **CI is red since run `32215352292` (2026-08-19)** — two separate breaks, both from the formatter
+push: `gen:check` ran before `install toolchain` and resolved the runner's preinstalled
+`clang-format` 18 (`AD §15.5k`), then run `32217838748` reached `clang-tidy` and failed on
+`bugprone-empty-catch` ×12 because the Allman switch moved 19 `// NOLINT` comments off the line
+their diagnostic is reported on (`AD §15.5l` · `CS §7.3`). Both fixed in the tree, neither yet
+confirmed by a run id. The first green with `clang-tidy` 19 actually grading was run `31537924701` (`6be480d`)
 — the run §15.5c called first-green was 18 failing to parse `.clang-tidy` (`AD §15.5g`). Do not
 restate "CI is green" without a run id; it has been wrong twice.
 **That green skips 30 of 140 tests and `ctest` still prints `100% tests passed`** — every

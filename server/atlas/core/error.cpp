@@ -56,8 +56,8 @@ void ReportGuardedException( const std::exception& failure ) noexcept
             ATLAS_LOG_ERROR( "guarded handler threw: {}\nthrow stack:\n{}", failure.what(), trace );
         }
     }
-    catch ( ... )
-    {  // NOLINT - 보고 경로는 전부여야 함
+    catch ( ... )  // NOLINT - 보고 경로는 전부여야 함
+    {
     }
 }
 
@@ -75,8 +75,8 @@ void ReportGuardedUnknownException() noexcept
             ATLAS_LOG_ERROR( "guarded handler threw: non-std exception\nthrow stack:\n{}", trace );
         }
     }
-    catch ( ... )
-    {  // NOLINT - ReportGuardedException 참고
+    catch ( ... )  // NOLINT - ReportGuardedException 참고
+    {
     }
 }
 
