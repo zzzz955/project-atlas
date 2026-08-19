@@ -1578,6 +1578,9 @@ denylist는 고정 목록이 아니다 — **데모 게임이 자라면 denylist
 (`clang-format` 버전 스큐, §15.5f). 로컬 PASS 를 CI PASS 의 근거로 삼지 마라.
 `configure`는 게이트 단계가 아니라 준비 단계로 format-check 앞에 들어간다 — clang-tidy가 요구하는
 `compile_commands.json`은 구성된 Ninja 트리에서만 나오기 때문이다.
+**`install toolchain` 도 같은 의미의 준비 단계이며, `gen:check` 앞에 조건 없이 들어간다** —
+`gen:check` 가 생성 코드를 `clang-format` 에 통과시키므로 문서 전용 푸시에서도 포매터가 필요하다
+(§15.5k).
 
 #### `test` 단계는 skip 을 통과로 세지 않는다 (2026-08-10, DB 축 착지 후 발견·수정)
 
@@ -1625,6 +1628,8 @@ exit 0 을 반환한다.** 결과적으로 MySQL 컨테이너가 healthy 인데�
 (`.clang-tidy` 의 `ExcludeHeaderFilterRegex`) — 생성 코드의 네이밍까지 강제할 이유는 없다.
 교훈은 §15.4 규칙과 같다: **"검사할 필요가 없다"는 판단은 그 디렉터리에 손으로 쓴 파일이
 하나도 없을 때만 성립하고, 그 조건은 시간이 지나면 조용히 깨진다.**
+**이 변경은 CI 를 한 번 붉혔다** — 포맷 훅이 `gen:check` 를 `clang-format` 에 의존하게 만들었는데
+그 바이너리를 까는 단계가 뒤에, 그리고 조건부로 있었다(§15.5k).
 
 **`clang-tidy` 단계만 두 구현이 동등하지 않다 — CI(Linux/clang) 전용이다.** 로컬 Windows 게이트는
 이 단계를 건너뛴다(조용히가 아니라 사유를 출력하고 건너뛴다). 실측 2026-08-06: MSVC로 구성한
@@ -2289,6 +2294,37 @@ enum 이고 OR 조합이 `MiniDumpWriteDump` 의 호출 계약이라 열거자�
 `140/140` skip 0** 이다. **초록을 인용할 때는 셋을 함께 적는다: 런 id · skip 수 · "DB 축은
 로컬 게이트가 채점한다".** 하나만 인용하면 그 문장은 거짓에 가깝고, 이 프로젝트에서 그 사고는
 이미 두 번 났다(§15.5c · §15.5g).
+
+#### 15.5k `gen:check` 가 툴체인보다 먼저 돌았다 — 포맷 훅이 만든 순서 의존 (2026-08-19, run 32215352292 · `d45425c`)
+
+**증상**: 푸시 21초 만에 3번째 단계 `gen:check` 에서 붉음. 로그는 이렇다.
+
+```
+clang-format 19 이상을 찾지 못했다. 생성 코드를 포맷할 수 없다.
+  버전 미달로 거부: clang-format (버전 18)
+    at resolveClangFormat (tools/cxx-format.js:78)
+    at writeTextFile (tools/info_generator/info_generator.js:73)
+```
+
+**원인**: 바로 앞 변경(§15.4 "세 번째 구멍")이 생성기 3종의 `writeTextFile` 에 포맷 훅을 걸면서,
+**`gen:check` 가 `clang-format >= 19` 에 의존하게 됐다.** 그런데 `ci.yml` 에서 그 바이너리를 까는
+`install toolchain` 은 ① `gen:check` **뒤**에 있었고 ② `if: steps.scope.outputs.cpp == 'true'` 로
+C++ 절반에만 붙어 있었다. 결과적으로 러너에는 아직 `clang-format-19` 가 없고, `cxx-format.js` 의
+탐색 순서가 마지막 후보인 PATH 의 `clang-format` = **preinstalled 18** 까지 내려가 거부하고 던졌다.
+
+**로컬은 초록이었다.** VS 2022 가 19.1.5 를 동봉하므로 `vsBundled()` 후보에서 바로 잡힌다.
+§15.5c · §15.5f · §15.5g 와 **같은 부류의 네 번째 사고** — 로컬 PASS 는 CI PASS 의 근거가 아니고,
+`ubuntu-24.04` 의 이름 없는 `clang-format` 은 18 이다.
+
+**수정**: `install toolchain` 을 `gen:check` **앞**으로 올리고 `if` 를 제거해 **모든 푸시에서**
+돌게 했다. 즉 이 단계는 `configure` 와 같은 **준비 단계**이지 게이트 단계가 아니다(§15.4).
+`clang-format-19` 만 앞에 따로 까는 분할안은 버렸다 — `apt-get update` 를 두 번 내는 비용이
+단계 전체(19초, §15.5j)보다 크다. 문서 전용 푸시가 19초를 더 내지만, 그 푸시도 `gen:check` 는
+돌므로 어차피 포매터가 필요하다.
+
+**규칙**: **게이트 단계가 새 외부 바이너리에 의존하게 되는 변경은, 그 바이너리를 까는 단계가
+자기보다 앞에 있고 자기와 같은 조건에서 도는지 같은 변경에서 확인한다.** 여기서 깨진 것은
+버전이 아니라 **순서와 조건**이었다 — `install toolchain` 자체는 처음부터 옳았다.
 
 ---
 

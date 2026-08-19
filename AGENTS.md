@@ -130,6 +130,9 @@ Presets: `windows-debug` · `windows-ci` · `linux-release` · `linux-ci` (`{win
 CI gate order: `gen:check → core-purity → format-check → clang-tidy → build(unity ON) → build(unity
 OFF) → test` (`ci-gate.ps1` inserts `configure` as prep before `format-check` — clang-tidy needs the
 Ninja tree's `compile_commands.json`, so its printed step count is the list above plus that one).
+In `ci.yml` **`install toolchain` is prep too, ahead of `gen:check` and unconditional** — `gen:check`
+formats the code it emits, so even a docs-only push needs `clang-format-19`. It sat below `gen:check`
+behind the C++-half `if` once and reddened every push (`AD §15.5k`).
 The **non-unity** build is the gate that catches missing includes and ODR collisions — never skip it.
 `gen:check` leads the gate: it is the mechanical enforcement of "never edit generated output".
 `format-check` covers `server/generated` too, which it did not before: the generators pipe every
@@ -146,8 +149,10 @@ AST). Suppressing the PCH just to satisfy the linter would tidy a TU the compile
 the step moved to `linux-ci` instead. Undo when clang-cl lands locally. `AD §15.4` · `CS §7.3`.
 cmake/ninja/clang-* are **not on PATH** — they ship with VS 2022; reach them via
 `Common7\Tools\VsDevCmd.bat -arch=amd64` (both `setup.bat` and `ci-gate.ps1` do this themselves).
-CI is green as of run `31731260372` (2026-08-13, `ecb65da`, 10m10s; `clang-tidy` alone is 431s =
-71% of it). The first green with `clang-tidy` 19 actually grading was run `31537924701` (`6be480d`)
+The last green run is `31731260372` (2026-08-13, `ecb65da`, 10m10s; `clang-tidy` alone is 431s =
+71% of it). **CI is red since run `32215352292` (2026-08-19, `d45425c`)** — `gen:check` ran before
+`install toolchain` and resolved the runner's preinstalled `clang-format` 18. Fixed in the tree, not
+yet confirmed by a run id (`AD §15.5k`). The first green with `clang-tidy` 19 actually grading was run `31537924701` (`6be480d`)
 — the run §15.5c called first-green was 18 failing to parse `.clang-tidy` (`AD §15.5g`). Do not
 restate "CI is green" without a run id; it has been wrong twice.
 **That green skips 30 of 140 tests and `ctest` still prints `100% tests passed`** — every
