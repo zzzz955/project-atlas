@@ -29,7 +29,7 @@ target_link_libraries(atlas_info_tests
 
 add_executable(atlas_config_tests config_test.cpp)
 target_link_libraries(atlas_config_tests PRIVATE atlas_config GTest::gtest GTest::gtest_main)
-# 🔴 The committed server.ini is located by an absolute path baked in at configure time. Deriving it
+# The committed server.ini is located by an absolute path baked in at configure time. Deriving it
 # from the working directory would make the test pass under ctest and fail everywhere else, and the
 # ini is the file this suite exists to pin (architecture-design.md §5.4).
 target_compile_definitions(atlas_config_tests PRIVATE
@@ -56,7 +56,7 @@ target_link_libraries(atlas_tx_tests
 # architecture-design.md §3.3 / §8.2 / §10 — the demo game: the domain model, the atomic equip, and
 # the end-to-end socket run (load -> equip -> reconnect).
 #
-# 🔴 It links atlas_demo, the game library, NOT the atlas_game executable: a target with main() in it
+# It links atlas_demo, the game library, NOT the atlas_game executable: a target with main() in it
 # cannot be linked into a test. That split is the reason the server wiring lives in game/handlers.cpp
 # and main.cpp is only a process shell — otherwise the server under test would be a second, parallel
 # implementation of the one that ships.
@@ -70,14 +70,14 @@ target_link_libraries(atlas_game_tests PRIVATE atlas_demo GTest::gtest GTest::gt
 # architecture-design.md §10.2 — the cache axis: the ranking, the read cache, and the case the whole
 # section rests on (a character loads while Redis is unreachable).
 #
-# 🔴 Its own executable, and here the reason is stronger than the usual unity-batch one: this suite
+# Its own executable, and here the reason is stronger than the usual unity-batch one: this suite
 # stands up GameServer instances with a DELIBERATELY DEAD Redis endpoint, and the file-local helpers
 # it shares a name with in game_equip_test.cpp (a config loader, a TestClient, a fixture) would
 # collide in one anonymous namespace with unity build ON.
 add_executable(atlas_cache_tests game_cache_test.cpp)
 target_link_libraries(atlas_cache_tests PRIVATE atlas_demo GTest::gtest GTest::gtest_main)
 
-# 🔴 vcpkg compiles libmariadb's plugin directory in as an absolute path into its own build tree,
+# vcpkg compiles libmariadb's plugin directory in as an absolute path into its own build tree,
 # which does not exist once the port is installed. MySQL 8.4 authenticates with
 # caching_sha2_password and this driver ships that as a separate plugin DLL, so a client that cannot
 # find the directory fails the handshake — and the server answers "1045 access denied", which points
@@ -105,7 +105,7 @@ gtest_discover_tests(atlas_net_tests)
 gtest_discover_tests(atlas_proto_tests)
 gtest_discover_tests(atlas_config_tests)
 
-# 🔴 The DB suite needs a real MySQL, and with none reachable it must be visibly skipped rather than
+# The DB suite needs a real MySQL, and with none reachable it must be visibly skipped rather than
 # quietly green — a suite that "passes" without a database retires the question it exists to ask.
 # GTEST_SKIP() alone still exits 0, which ctest reports as Passed; this property is what turns it
 # into ctest's own Skipped state, so the run summary shows the gap.
@@ -119,7 +119,7 @@ gtest_discover_tests(atlas_tx_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED:
 # database, the domain-model cases do not.
 gtest_discover_tests(atlas_game_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPPED: ")
 
-# 🔴 And again for the cache suite, which needs BOTH a database and a Redis. The gate treats a
+# And again for the cache suite, which needs BOTH a database and a Redis. The gate treats a
 # Skipped test as a failure whenever a database was reachable (§15.4), and since Redis is now a
 # default service of the compose stack (§15.3) a run that reaches MySQL but not Redis is a broken
 # environment rather than an acceptable partial run. The codec case below needs neither and always
@@ -128,7 +128,7 @@ gtest_discover_tests(atlas_cache_tests PROPERTIES SKIP_REGULAR_EXPRESSION "SKIPP
 
 # ── info_generator itself is under test ──────────────────────────────────────────────────────
 #
-# 🔴 A data generator whose value is "it refuses bad data" has to be shown refusing it. A planner
+# A data generator whose value is "it refuses bad data" has to be shown refusing it. A planner
 # edits these CSVs, not a programmer, and the only thing standing between a typo and a silently
 # wrong table is the message this generator prints — so each fixture is asserted twice: it must
 # EXIT NON-ZERO and it must name `file:line:column`. A generator that dies without a location is
@@ -169,7 +169,7 @@ if(ATLAS_NODE_EXECUTABLE)
             PASS_REGULAR_EXPRESSION "${escaped}")
     endforeach()
 else()
-    # 🔴 Announced, never silent: a skipped gate that says nothing is a dead gate.
+    # Announced, never silent: a skipped gate that says nothing is a dead gate.
     message(WARNING
         "node not found - the info_generator rejection tests are NOT registered. node is required "
         "by this repository anyway (npm run gen:*), so this is a broken setup.")

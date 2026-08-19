@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// [AD 10.2] 데모 게임의 exp 랭킹. Redis 읽기 캐시 축
+// DB 가 진실이고 여기는 사본. 유실은 SELECT 한 번으로 복구되는 값
+// =============================================================================
+
 #include <functional>
 #include <string>
 #include <vector>
@@ -8,65 +14,49 @@
 #include "atlas/core/types.h"
 #include "atlas/redis/redis_runner.h"
 
-// The demo game's exp ranking (architecture-design.md §10.2 — "read cache (global settings ·
-// ranking snapshot)", the first row of the allow table).
-//
-// 🔴 THIS FILE COULD NOT BE WRITTEN UNDER server/atlas/**. `ranking` is on
-// tools/core_purity/denylist.txt, so the gate (§15.4) fails the build if the core learns this word.
-// That is deliberate and it is the point of the split: `atlas/redis` executes commands, and the KEY
-// FORMAT below — what a ranking is named, what it is scored by, how many members it holds — is game
-// vocabulary. A core that owned the key string would own the game's data model.
-//
-// 🔴 THE SOURCE IS `characters.exp`, WHICH ALREADY EXISTS. No new column and no new table: the demo
-// minimum set (§3.3) is not widened for a leaderboard, so the ranking is a projection of a column
-// the game already persists.
-//
-// 🔴 THE DATABASE IS THE SOURCE OF TRUTH AND THIS IS A COPY. Every write goes in after the
-// transaction that produced the value COMMITTED (see handlers.h), and a failed write is a lost copy
-// rather than a lost fact. Rebuilding the whole ranking is a `SELECT` away, which is precisely why
-// losing it is allowed to be cheap.
+namespace atlas_demo
+{
 
-namespace atlas_demo {
+// `ranking:{server_id}:exp` - 서버당 sorted set 1개
+// 두 서버를 합치면 만날 일 없는 모집단을 비교하게 됨
+// [AD 15.4] 키 형식은 게임 어휘. ranking 은 core-purity denylist 에 있음
+[[nodiscard]] std::string ExpRankingKey( atlas::UInt16 server_id );
 
-// `ranking:{server_id}:exp` — one sorted set per server, because §6 scopes a character by
-// (server_id, character_id) and a ranking that merged two servers would be comparing populations
-// that never meet.
-[[nodiscard]] std::string ExpRankingKey(atlas::UInt16 server_id);
-
-struct RankEntry {
+// 출처는 이미 있는 characters.exp
+// [AD 3.3] 리더보드를 위해 새 컬럼이나 새 테이블을 만들지 않음
+struct RankEntry
+{
     atlas::CharacterId character_id{};
-    atlas::UInt64 exp{0};
+    atlas::UInt64 exp{ 0 };
 
-    friend bool operator==(const RankEntry&, const RankEntry&) = default;
+    friend bool operator==( const RankEntry&, const RankEntry& ) = default;
 };
 
-// 🔴 A ceiling on what one request may ask for. §8.1 caps a payload at 16 KiB and an unbounded
-// ZREVRANGE would let a client choose both the server's work and the response size.
+// [AD 8.1] 페이로드 상한 16 KiB
+// 무제한 ZREVRANGE 는 클라이언트가 서버 작업량과 응답 크기를 모두 고르게 함
 inline constexpr atlas::UInt16 kMaxRankEntries = 100;
 
-class ExpRanking {
+class ExpRanking
+{
 public:
-    // `ok` is false when Redis did not answer. 🔴 It is NOT "the ranking is empty" — a caller that
-    // conflated the two would report an outage as a leaderboard nobody is on.
-    using TopHandler = std::function<void(bool ok, const std::vector<RankEntry>& entries)>;
+    // ok=false 는 Redis 무응답. "랭킹이 비었음"이 아님
+    // 둘을 섞으면 장애가 아무도 없는 리더보드로 보고됨
+    using TopHandler = std::function< void( bool ok, const std::vector< RankEntry >& entries ) >;
 
-    explicit ExpRanking(atlas::RedisRunner& runner) : runner_(&runner) {}
+    explicit ExpRanking( atlas::RedisRunner& runner ) : runner_( &runner ) {}
 
-    // ZADD. 🔴 CALL ONLY AFTER THE TRANSACTION THAT READ THIS VALUE COMMITTED. Writing the copy
-    // first would record a number the database may still refuse, and the ranking has no way to
-    // take it back.
-    //
-    // Fire and forget: there is no completion because there is no decision to make. A failure is
-    // logged at DEBUG and the next load of that character puts the value back.
-    void Record(atlas::Ctx ctx, atlas::UInt16 server_id, atlas::CharacterId character_id,
-                atlas::UInt64 exp);
+    // ZADD. 값을 읽은 트랜잭션이 커밋된 뒤에만 호출할 것
+    // 먼저 쓰면 DB 가 아직 거부할 수 있는 수를 기록하고 되돌릴 수단이 없음
+    // 완료 콜백 없음. 실패는 DEBUG 로그뿐이고 다음 로드가 값을 되돌림
+    void Record( atlas::Ctx ctx, atlas::UInt16 server_id, atlas::CharacterId character_id,
+                 atlas::UInt64 exp );
 
-    // ZREVRANGE ... WITHSCORES, highest exp first. `count` is clamped to kMaxRankEntries.
-    void Top(atlas::Ctx ctx, atlas::UInt16 server_id, atlas::UInt16 count, TopHandler handler,
-             atlas::RedisRunner::CompletionPoster poster = {});
+    // ZREVRANGE WITHSCORES, exp 내림차순. count 는 kMaxRankEntries 로 제한
+    void Top( atlas::Ctx ctx, atlas::UInt16 server_id, atlas::UInt16 count, TopHandler handler,
+              atlas::RedisRunner::CompletionPoster poster = {} );
 
 private:
-    // Non-owning observer: the runner outlives this object by construction (cpp-style.md §4.4).
+    // [CS 4.4] 비소유 관찰자. runner 는 구조상 이 객체보다 오래 삶
     atlas::RedisRunner* runner_;
 };
 

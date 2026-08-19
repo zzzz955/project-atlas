@@ -1,4 +1,4 @@
-# Tests for the db_generator C++ target. 🔴 Hand-written, unlike everything one level up.
+# Tests for the db_generator C++ target. Hand-written, unlike everything one level up.
 # They live under generated/db/ (not server/tests/) so this work item owns a single directory and
 # cannot collide with the core test file or with the pkt tests.
 find_package(GTest CONFIG REQUIRED)
@@ -13,7 +13,7 @@ include(GoogleTest)
 gtest_discover_tests(atlas_generated_db_tests TEST_PREFIX db.)
 
 # ── The generator itself is under test too ───────────────────────────────────────────────────
-# 🔴 A schema that stores an identifier narrower than its strong-typed ID must make db_generator die
+# A schema that stores an identifier narrower than its strong-typed ID must make db_generator die
 # loudly (cpp-style.md §4.3). Emitting it anyway would truncate every identifier above 2^32 — and
 # identifiers are handed out by the server, so the damage would only surface in production data,
 # well after the schema shipped. The fixture lives outside server/db/ so a normal `npm run gen:db`
@@ -36,7 +36,7 @@ if(ATLAS_NODE_EXECUTABLE)
     set_tests_properties(db.generator_rejects_narrow_id_message PROPERTIES
         PASS_REGULAR_EXPRESSION "cpp-style.md 4\\.3")
 else()
-    # 🔴 Announced, never silent: a skipped gate that says nothing is a dead gate.
+    # Announced, never silent: a skipped gate that says nothing is a dead gate.
     message(WARNING
         "node not found - the db_generator identifier-width rejection tests are NOT registered. "
         "node is required by this repository anyway (npm run gen:*), so this is a broken setup.")

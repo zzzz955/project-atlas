@@ -1,11 +1,11 @@
 // project-atlas 데모 계약 — 이동 (architecture-design.md §3.3 "이동", §8 프로토콜).
 //
-// 🔴 이 파일은 계약 SoT다. 여기서 C++ DTO(server/generated/pkt/**)가 생성된다 —
+// 이 파일은 계약 SoT다. 여기서 C++ DTO(server/generated/pkt/**)가 생성된다 —
 //    `npm run gen:pkt`. 생성물을 직접 고치지 말고 이 파일을 고친다.
-// 🔴 C++ 서버 레포에 .cs 가 있는 것은 의도된 것이다: 계약 한 벌 → C#/GDScript/C++ 다중 타깃
+// C++ 서버 레포에 .cs 가 있는 것은 의도된 것이다: 계약 한 벌 → C#/GDScript/C++ 다중 타깃
 //    생성이 이 프레임워크의 seam 이다(architecture-design.md §14).
-// 🔴 부동소수점 필드 금지(§8.4). 좌표는 그리드 단위로 양자화된 정수다.
-// 🔴 프레임 헤더(길이·opcode·시퀀스·체크섬·HMAC)는 계약에 넣지 않는다 — 코어의 몫이다.
+// 부동소수점 필드 금지(§8.4). 좌표는 그리드 단위로 양자화된 정수다.
+// 프레임 헤더(길이·opcode·시퀀스·체크섬·HMAC)는 계약에 넣지 않는다 — 코어의 몫이다.
 
 using System.Collections.Generic;
 

@@ -9,7 +9,7 @@ add_library(atlas_net STATIC acceptor.cpp io_runner.cpp session.cpp)
 # include path too - a PRIVATE link would compile this library and break the first user of it.
 target_link_libraries(atlas_net PUBLIC atlas_core Boost::asio)
 
-# 🔴 Without this Boost.Asio prints "Assuming _WIN32_WINNT=0x0601 (Windows 7)" and then compiles
+# Without this Boost.Asio prints "Assuming _WIN32_WINNT=0x0601 (Windows 7)" and then compiles
 # itself against the Windows 7 API surface - a silently different socket implementation from the one
 # prod (Linux) and this machine actually run. PUBLIC because net_types.h pulls <boost/asio.hpp> into
 # every consumer, and a consumer that assumed a different value would be an ODR violation.

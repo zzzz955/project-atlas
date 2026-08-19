@@ -1,3 +1,7 @@
+// =============================================================================
+// [AD 5.4] server.ini 파싱과 .env 비밀값 분리 규약 검사
+// =============================================================================
+
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -11,22 +15,23 @@
 #include "atlas/core/log.h"
 #include "atlas/core/types.h"
 
-namespace {
+namespace
+{
 
-// Injected by server/tests/CMakeLists.txt. 🔴 The committed server.ini is found by absolute path:
-// a test that assumed a working directory would pass under ctest and fail under the debugger.
+// CMakeLists.txt 가 주입. 작업 디렉터리를 가정하면 디버거에서 실패
 constexpr std::string_view kServerIniPath = ATLAS_SERVER_INI_PATH;
 
-void SetTestEnv(const char* name, const char* value) {
-#if defined(_MSC_VER)
-    static_cast<void>(_putenv_s(name, value));
+void SetTestEnv( const char* name, const char* value )
+{
+#if defined( _MSC_VER )
+    static_cast< void >( _putenv_s( name, value ) );
 #else
-    static_cast<void>(setenv(name, value, 1));
+    static_cast< void >( setenv( name, value, 1 ) );
 #endif
 }
 
-// Every required key present, so each failure test varies exactly one field.
-std::string MakeIni(std::string_view role, std::string_view listen_port) {
+std::string MakeIni( std::string_view role, std::string_view listen_port )
+{
     std::string text = "[server]\nrole = ";
     text += role;
     text += "\nserver_id = 1\nworld_id = 0\nserver_group = 0\nlisten_port = ";
@@ -36,144 +41,155 @@ std::string MakeIni(std::string_view role, std::string_view listen_port) {
     return text;
 }
 
-// architecture-design.md §5.4 — the committed file is the spec, so the test reads the real one
-// rather than a copy that can drift away from it.
-TEST(ConfigServerIni, CommittedFileRoundTrips) {
-    const atlas::ServerConfig config = atlas::ServerConfig::LoadFile(kServerIniPath);
+// [AD 5.4] 커밋된 파일이 곧 명세. 사본은 드리프트하므로 실물을 읽음
+TEST( ConfigServerIni, CommittedFileRoundTrips )
+{
+    const atlas::ServerConfig config = atlas::ServerConfig::LoadFile( kServerIniPath );
 
-    EXPECT_EQ(config.role, atlas::ServerRole::Game);
-    EXPECT_EQ(atlas::RoleName(config.role), "game");
-    EXPECT_EQ(config.server_id, atlas::UInt32{1});
-    EXPECT_EQ(config.world_id, atlas::UInt32{0});
-    EXPECT_EQ(config.server_group, atlas::UInt32{0});
-    EXPECT_EQ(config.listen_port, atlas::UInt16{7777});
-    EXPECT_EQ(config.io_workers, atlas::UInt32{0});
-    EXPECT_EQ(config.log.level, atlas::LogLevel::Info);
-    EXPECT_EQ(config.log.dir, "logs");
-    EXPECT_EQ(config.log.retention_days, atlas::UInt32{14});
+    EXPECT_EQ( config.role, atlas::ServerRole::Game );
+    EXPECT_EQ( atlas::RoleName( config.role ), "game" );
+    EXPECT_EQ( config.server_id, atlas::UInt32{ 1 } );
+    EXPECT_EQ( config.world_id, atlas::UInt32{ 0 } );
+    EXPECT_EQ( config.server_group, atlas::UInt32{ 0 } );
+    EXPECT_EQ( config.listen_port, atlas::UInt16{ 7777 } );
+    EXPECT_EQ( config.io_workers, atlas::UInt32{ 0 } );
+    EXPECT_EQ( config.log.level, atlas::LogLevel::Info );
+    EXPECT_EQ( config.log.dir, "logs" );
+    EXPECT_EQ( config.log.retention_days, atlas::UInt32{ 14 } );
 }
 
-// §14 — the stack axis is data that is read and stored. Nothing branches on it.
-TEST(ConfigServerIni, StackAxisIsReadAsData) {
-    const atlas::ServerConfig config = atlas::ServerConfig::LoadFile(kServerIniPath);
+// [AD 14] stack 축은 읽어서 보관만 하는 데이터. 여기에 분기가 걸리지 않음
+TEST( ConfigServerIni, StackAxisIsReadAsData )
+{
+    const atlas::ServerConfig config = atlas::ServerConfig::LoadFile( kServerIniPath );
 
-    EXPECT_EQ(config.stack.client, "godot");
-    EXPECT_EQ(config.stack.server, "cpp-asio");
-    EXPECT_EQ(config.stack.db, "mysql");
-    EXPECT_EQ(config.stack.cache, "redis");
+    EXPECT_EQ( config.stack.client, "godot" );
+    EXPECT_EQ( config.stack.server, "cpp-asio" );
+    EXPECT_EQ( config.stack.db, "mysql" );
+    EXPECT_EQ( config.stack.cache, "redis" );
 }
 
-// §5.2 — every role the topology defines has to survive the round trip, or the "same binary,
-// different ini" rule is only true for the one role that happens to be committed.
-TEST(ConfigServerIni, EveryRoleParses) {
-    EXPECT_EQ(atlas::ServerConfig::FromIni(atlas::IniDocument::Parse(MakeIni("fe", "7777"))).role,
-              atlas::ServerRole::Fe);
+// [AD 5.2] 모든 role 이 왕복해야 "같은 바이너리, 다른 ini" 가 성립
+TEST( ConfigServerIni, EveryRoleParses )
+{
     EXPECT_EQ(
-        atlas::ServerConfig::FromIni(atlas::IniDocument::Parse(MakeIni("world", "7777"))).role,
-        atlas::ServerRole::World);
+        atlas::ServerConfig::FromIni( atlas::IniDocument::Parse( MakeIni( "fe", "7777" ) ) ).role,
+        atlas::ServerRole::Fe );
     EXPECT_EQ(
-        atlas::ServerConfig::FromIni(atlas::IniDocument::Parse(MakeIni("interworld", "7777"))).role,
-        atlas::ServerRole::InterWorld);
+        atlas::ServerConfig::FromIni( atlas::IniDocument::Parse( MakeIni( "world", "7777" ) ) )
+            .role,
+        atlas::ServerRole::World );
+    EXPECT_EQ(
+        atlas::ServerConfig::FromIni( atlas::IniDocument::Parse( MakeIni( "interworld", "7777" ) ) )
+            .role,
+        atlas::ServerRole::InterWorld );
 }
 
-TEST(ConfigIniDocument, ParsesSectionsCommentsAndBlankLines) {
+TEST( ConfigIniDocument, ParsesSectionsCommentsAndBlankLines )
+{
     const atlas::IniDocument document = atlas::IniDocument::Parse(
-        "; leading comment\n\n[server]\n# another comment\n  role  =  game   ; trailing\n");
+        "; leading comment\n\n[server]\n# another comment\n  role  =  game   ; trailing\n" );
 
-    EXPECT_EQ(document.Get("server", "role").value_or("<missing>"), "game");
-    EXPECT_FALSE(document.Get("server", "absent").has_value());
-    EXPECT_FALSE(document.Get("absent", "role").has_value());
+    EXPECT_EQ( document.Get( "server", "role" ).value_or( "<missing>" ), "game" );
+    EXPECT_FALSE( document.Get( "server", "absent" ).has_value() );
+    EXPECT_FALSE( document.Get( "absent", "role" ).has_value() );
 }
 
-// 🔴 Malformed input fails; it is never skipped. The static_cast<void> is what keeps /W4 quiet
-// about the [[nodiscard]] factories - EXPECT_THROW only cares that the statement throws.
-TEST(ConfigIniDocument, RejectsMalformedDocuments) {
-    EXPECT_THROW(static_cast<void>(atlas::IniDocument::Parse("[server]\nrole = game\nrole = fe\n")),
-                 atlas::Exception);
-    EXPECT_THROW(static_cast<void>(atlas::IniDocument::Parse("role = game\n")), atlas::Exception);
-    EXPECT_THROW(static_cast<void>(atlas::IniDocument::Parse("[server\nrole = game\n")),
-                 atlas::Exception);
-    EXPECT_THROW(static_cast<void>(atlas::IniDocument::LoadFile("no_such_file_here.ini")),
-                 atlas::Exception);
+// 잘못된 입력은 반드시 실패. static_cast<void> 는 [[nodiscard]] /W4 억제용
+TEST( ConfigIniDocument, RejectsMalformedDocuments )
+{
+    EXPECT_THROW(
+        static_cast< void >( atlas::IniDocument::Parse( "[server]\nrole = game\nrole = fe\n" ) ),
+        atlas::Exception );
+    EXPECT_THROW( static_cast< void >( atlas::IniDocument::Parse( "role = game\n" ) ),
+                  atlas::Exception );
+    EXPECT_THROW( static_cast< void >( atlas::IniDocument::Parse( "[server\nrole = game\n" ) ),
+                  atlas::Exception );
+    EXPECT_THROW( static_cast< void >( atlas::IniDocument::LoadFile( "no_such_file_here.ini" ) ),
+                  atlas::Exception );
 }
 
-TEST(ConfigServerIni, RejectsAnUnknownRole) {
-    EXPECT_THROW(static_cast<void>(atlas::ServerConfig::FromIni(
-                     atlas::IniDocument::Parse(MakeIni("lobby", "1")))),
-                 atlas::Exception);
+TEST( ConfigServerIni, RejectsAnUnknownRole )
+{
+    EXPECT_THROW( static_cast< void >( atlas::ServerConfig::FromIni(
+                      atlas::IniDocument::Parse( MakeIni( "lobby", "1" ) ) ) ),
+                  atlas::Exception );
 }
 
-// cpp-style.md §4.1 — listen_port is a UInt16, so a value outside that width is a failure and not
-// a silent wrap to 4464.
-TEST(ConfigServerIni, RejectsAListenPortOutsideUInt16) {
-    EXPECT_THROW(static_cast<void>(atlas::ServerConfig::FromIni(
-                     atlas::IniDocument::Parse(MakeIni("game", "70000")))),
-                 atlas::Exception);
-    EXPECT_THROW(static_cast<void>(atlas::ServerConfig::FromIni(
-                     atlas::IniDocument::Parse(MakeIni("game", "-1")))),
-                 atlas::Exception);
+// [CS 4.1] listen_port 는 UInt16. 폭 밖의 값은 4464 로 조용히 감기지 않고 실패
+TEST( ConfigServerIni, RejectsAListenPortOutsideUInt16 )
+{
+    EXPECT_THROW( static_cast< void >( atlas::ServerConfig::FromIni(
+                      atlas::IniDocument::Parse( MakeIni( "game", "70000" ) ) ) ),
+                  atlas::Exception );
+    EXPECT_THROW( static_cast< void >( atlas::ServerConfig::FromIni(
+                      atlas::IniDocument::Parse( MakeIni( "game", "-1" ) ) ) ),
+                  atlas::Exception );
 }
 
-TEST(ConfigServerIni, RejectsAMissingRequiredKey) {
-    EXPECT_THROW(static_cast<void>(atlas::ServerConfig::FromIni(
-                     atlas::IniDocument::Parse("[server]\nrole = game\n"))),
-                 atlas::Exception);
+TEST( ConfigServerIni, RejectsAMissingRequiredKey )
+{
+    EXPECT_THROW( static_cast< void >( atlas::ServerConfig::FromIni(
+                      atlas::IniDocument::Parse( "[server]\nrole = game\n" ) ) ),
+                  atlas::Exception );
 }
 
-// 🔴 architecture-design.md §5.4 — the loader prints key names, never values. This is the control
-// that keeps a credential out of the log files.
-TEST(ConfigSecrets, NeverPutsASecretValueIntoADiagnosticString) {
+// [AD 5.4] 로더는 키 이름만 찍음. 자격 증명 유출을 막는 유일한 통제
+TEST( ConfigSecrets, NeverPutsASecretValueIntoADiagnosticString )
+{
     constexpr const char* kSentinel = "SENTINEL-PASSWORD-9f3a1c";
 
-    SetTestEnv("ATLAS_DB_HOST", "db.internal");
-    SetTestEnv("ATLAS_DB_PORT", "3306");
-    SetTestEnv("ATLAS_DB_NAME", "atlas");
-    SetTestEnv("ATLAS_DB_USER", "atlas_user");
-    SetTestEnv("ATLAS_DB_PASSWORD", kSentinel);
-    SetTestEnv("ATLAS_JWKS_URL", "https://auth.example/.well-known/jwks.json");
+    SetTestEnv( "ATLAS_DB_HOST", "db.internal" );
+    SetTestEnv( "ATLAS_DB_PORT", "3306" );
+    SetTestEnv( "ATLAS_DB_NAME", "atlas" );
+    SetTestEnv( "ATLAS_DB_USER", "atlas_user" );
+    SetTestEnv( "ATLAS_DB_PASSWORD", kSentinel );
+    SetTestEnv( "ATLAS_JWKS_URL", "https://auth.example/.well-known/jwks.json" );
 
     const atlas::SecretConfig secrets = atlas::SecretConfig::FromEnvironment();
 
-    // Positive control: without this, "the value never shows up" could just mean it was never read.
-    EXPECT_EQ(secrets.db_password, kSentinel);
-    EXPECT_EQ(secrets.db_port, atlas::UInt16{3306});
+    // 양성 대조. 없으면 "값이 안 보임" 과 "읽은 적 없음" 이 구분되지 않음
+    EXPECT_EQ( secrets.db_password, kSentinel );
+    EXPECT_EQ( secrets.db_port, atlas::UInt16{ 3306 } );
 
-    // Every string this module can emit: the presence summary (which LogSummary logs verbatim) and
-    // the one error path it has.
     std::string diagnostics = secrets.DescribePresence();
-    SetTestEnv("ATLAS_DB_PORT", "not-a-port");
-    try {
-        static_cast<void>(atlas::SecretConfig::FromEnvironment());
+    SetTestEnv( "ATLAS_DB_PORT", "not-a-port" );
+    try
+    {
+        static_cast< void >( atlas::SecretConfig::FromEnvironment() );
         FAIL() << "a malformed ATLAS_DB_PORT must be rejected";
-    } catch (const atlas::Exception& ex) {
+    }
+    catch ( const atlas::Exception& ex )
+    {
         diagnostics += ex.what();
     }
 
-    EXPECT_EQ(diagnostics.find(kSentinel), std::string::npos);
-    // Negative control: the key names are expected to be there - that is the diagnostic value.
-    EXPECT_NE(diagnostics.find("ATLAS_DB_PASSWORD"), std::string::npos);
-    EXPECT_NE(diagnostics.find("ATLAS_DB_PORT"), std::string::npos);
+    EXPECT_EQ( diagnostics.find( kSentinel ), std::string::npos );
+    // 키 이름은 반드시 남아야 함. 그것이 진단으로서의 값어치
+    EXPECT_NE( diagnostics.find( "ATLAS_DB_PASSWORD" ), std::string::npos );
+    EXPECT_NE( diagnostics.find( "ATLAS_DB_PORT" ), std::string::npos );
 
-    atlas::SetLogLevel(atlas::LogLevel::Info);
-    const atlas::UInt64 info_before = atlas::LogCount(atlas::LogLevel::Info);
+    atlas::SetLogLevel( atlas::LogLevel::Info );
+    const atlas::UInt64 info_before = atlas::LogCount( atlas::LogLevel::Info );
     secrets.LogSummary();
-    EXPECT_EQ(atlas::LogCount(atlas::LogLevel::Info), info_before + 1);
+    EXPECT_EQ( atlas::LogCount( atlas::LogLevel::Info ), info_before + 1 );
 
-    SetTestEnv("ATLAS_DB_PASSWORD", "");
-    SetTestEnv("ATLAS_DB_PORT", "");
+    SetTestEnv( "ATLAS_DB_PASSWORD", "" );
+    SetTestEnv( "ATLAS_DB_PORT", "" );
 }
 
-TEST(ConfigSecrets, MissingKeysAreEmptyRatherThanAFailure) {
-    SetTestEnv("ATLAS_DB_PASSWORD", "");
-    SetTestEnv("ATLAS_DB_PORT", "");
+TEST( ConfigSecrets, MissingKeysAreEmptyRatherThanAFailure )
+{
+    SetTestEnv( "ATLAS_DB_PASSWORD", "" );
+    SetTestEnv( "ATLAS_DB_PORT", "" );
 
     const atlas::SecretConfig secrets = atlas::SecretConfig::FromEnvironment();
     const std::string summary = secrets.DescribePresence();
 
-    EXPECT_TRUE(secrets.db_password.empty());
-    EXPECT_EQ(secrets.db_port, atlas::UInt16{0});
-    EXPECT_NE(summary.find("ATLAS_DB_PASSWORD=<empty>"), std::string::npos);
-    EXPECT_NE(summary.find("ATLAS_DB_PORT=<empty>"), std::string::npos);
+    EXPECT_TRUE( secrets.db_password.empty() );
+    EXPECT_EQ( secrets.db_port, atlas::UInt16{ 0 } );
+    EXPECT_NE( summary.find( "ATLAS_DB_PASSWORD=<empty>" ), std::string::npos );
+    EXPECT_NE( summary.find( "ATLAS_DB_PORT=<empty>" ), std::string::npos );
 }
 
 }  // namespace

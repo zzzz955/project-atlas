@@ -1,3 +1,8 @@
+// =============================================================================
+// [AD 5.1] GAME 서버 바이너리. 단일 이미지 - 역할 분기 진입점
+// [AD 15.3] fe / world 는 크게 실패해야 함. 배선은 handlers.cpp 에 있음
+// =============================================================================
+
 #include <atomic>
 #include <csignal>
 #include <cstddef>
@@ -15,158 +20,152 @@
 #include "atlas/redis/connection.h"
 #include "game/handlers.h"
 
-// The GAME server binary (architecture-design.md §5.1 · §15.3).
-//
-// 🔴 Single image, role-branching entrypoint. `scripts/entrypoint.sh` maps ATLAS_ROLE -> binary and
-// this slice makes `game` real; `fe` and `world` must keep failing loudly, because §15.3's whole
-// point is that nothing is wrapped to look present when it is not.
-//
-// 🔴 The wiring is in game/handlers.cpp, not here. A main() that owned it would make the end-to-end
-// test build a second, different server — see the note at the top of handlers.h.
+namespace
+{
 
-namespace {
+// 우아한 종료 시그널 핸들러가 하는 일은 플래그 저장뿐
+// [AD 9] SIGINT/SIGTERM 은 순서 있는 종료로 가야 함
+// 여기서 로거 작업을 하지 않는 것이 async-signal-safe 를 유지함
+std::atomic< bool > g_stop_requested{
+    false };  // NOLINT - 시그널 플래그는 네임스페이스 범위에 있어야 함
 
-// 🔴 The only thing a graceful-stop signal handler does is store a flag. Crash diagnostics own only
-// fatal signals; SIGINT/SIGTERM must reach the ordered shutdown in §9, where LogShutdown flushes on
-// the main thread. Doing no logger work here is what keeps this handler async-signal-safe.
-std::atomic<bool> g_stop_requested{false};  // NOLINT — a signal flag has to be at namespace scope.
+extern "C" void OnStopSignal( int /*signal_number*/ ) { g_stop_requested.store( true ); }
 
-extern "C" void OnStopSignal(int /*signal_number*/) { g_stop_requested.store(true); }
-
-// Where server.ini is: argv[1], else the working directory — which is /app in the image, next to
-// the ini the Dockerfile copies there. 🔴 One override, not two: an environment variable for this
-// as well would put the same answer in two places, and §5.4's boundary is about which source owns
-// which fact.
-std::string IniPath(const char* argument) {
-    return argument == nullptr ? std::string("server.ini") : std::string(argument);
+// server.ini 위치는 argv[1], 없으면 작업 디렉터리
+// [AD 5.4] 환경 변수 재정의를 하나 더 두면 같은 답이 두 곳에 생김
+std::string IniPath( const char* argument )
+{
+    return argument == nullptr ? std::string( "server.ini" ) : std::string( argument );
 }
 
-// 🔴 architecture-design.md §10.3 — not read from server.ini, and the reason is honesty rather than
-// preference: the typed ini view lives in atlas/config and this slice did not widen it, so putting
-// keys in the committed ini that nothing parses would be decoration. They move into `[server]` the
-// moment ServerConfig learns to read them.
+// [AD 10.3] server.ini 에서 읽지 않음
+// 타입 있는 ini 뷰를 이 슬라이스에서 넓히지 않았음
+// 아무도 파싱하지 않는 키를 커밋하면 장식일 뿐
 constexpr std::size_t kDbPoolSize = 4;
 constexpr std::size_t kDbThreads = 2;
 
-// How often the server states its own counters (architecture-design.md §16.1).
-//
-// 🔴 Five seconds, and a single INFO line — never one per request. §16.1g measured a per-request
-// log line as a real server-side cost, and a counter that distorts the load it is describing is
-// worse than no counter. One line per five seconds is under a thousandth of that traffic, and the
-// counters are cumulative so nothing is lost between samples.
-constexpr atlas::Seconds kCounterInterval{5};
+// [AD 16.1] 서버가 자기 카운터를 말하는 주기
+// [AD 16.1g] 5초에 INFO 한 줄. 요청마다 찍는 로그는 실측된 서버측 비용
+// 부하를 왜곡하는 계수기는 없느니만 못함
+// 카운터는 누적이라 표본 사이 손실 없음
+constexpr atlas::Seconds kCounterInterval{ 5 };
 
 }  // namespace
 
-int main(int argc, char** argv) {  // NOLINT — the standard fixes main's signature.
-    try {
+int main( int argc, char** argv )
+{  // NOLINT - 표준이 main 의 시그니처를 고정함
+    try
+    {
         const atlas::ServerConfig config =
-            atlas::ServerConfig::LoadFile(IniPath(argc > 1 ? argv[1] : nullptr));
+            atlas::ServerConfig::LoadFile( IniPath( argc > 1 ? argv[1] : nullptr ) );
 
         atlas::LogConfig log_config;
         log_config.directory = config.log.dir;
         log_config.basename = "atlas_game";
         log_config.level = config.log.level;
-        log_config.retain_days = static_cast<atlas::UInt16>(config.log.retention_days);
-        atlas::LogInit(log_config);
+        log_config.retain_days = static_cast< atlas::UInt16 >( config.log.retention_days );
+        atlas::LogInit( log_config );
 
-        // 🔴 §5.4 — ATLAS_ROLE picks the binary, `[server] role` is the runtime identity, and they
-        // must agree. A GAME binary holding a WORLD ini is exactly the mismatch that boundary
-        // exists to catch, and it has to be a start-up failure: a server that boots into an
-        // identity nobody chose is worse than one that does not boot.
-        if (config.role != atlas::ServerRole::Game) {
-            ATLAS_LOG_FATAL("this is the GAME binary but server.ini says role={}",
-                            atlas::RoleName(config.role));
+        // [AD 5.4] ATLAS_ROLE 이 바이너리를 고르고 [server] role 은 런타임 신원
+        // 둘은 일치해야 함
+        // 아무도 고르지 않은 신원으로 뜨는 서버는 안 뜨는 서버보다 나쁨
+        if ( config.role != atlas::ServerRole::Game )
+        {
+            ATLAS_LOG_FATAL( "this is the GAME binary but server.ini says role={}",
+                             atlas::RoleName( config.role ) );
             atlas::LogShutdown();
             return 64;
         }
 
         const atlas::SecretConfig secrets = atlas::SecretConfig::FromEnvironment();
-        // 🔴 Key names and set/empty only — never a value (§5.4).
+        // [AD 5.4] 키 이름과 설정 여부만. 값은 절대 로그하지 않음
         secrets.LogSummary();
-        if (secrets.db_host.empty() || secrets.db_name.empty() || secrets.db_user.empty()) {
-            ATLAS_LOG_FATAL("the database secrets are incomplete; see server/.env.example");
+        if ( secrets.db_host.empty() || secrets.db_name.empty() || secrets.db_user.empty() )
+        {
+            ATLAS_LOG_FATAL( "the database secrets are incomplete; see server/.env.example" );
             atlas::LogShutdown();
             return 78;
         }
 
         atlas::DbConnectionConfig db_config;
         db_config.host = secrets.db_host;
-        db_config.port = secrets.db_port == 0 ? atlas::UInt16{3306} : secrets.db_port;
+        db_config.port = secrets.db_port == 0 ? atlas::UInt16{ 3306 } : secrets.db_port;
         db_config.database = secrets.db_name;
         db_config.user = secrets.db_user;
         db_config.password = secrets.db_password;
         db_config.tls_no_verify = secrets.db_tls_no_verify;
-        if (db_config.tls_no_verify) {
-            // 🔴 A relaxed TLS posture that leaves no trace in the log is indistinguishable from a
-            // mistake, so it announces itself once, at WARN, every single boot. See
-            // DbConnectionConfig::tls_no_verify for what is actually given up.
+        if ( db_config.tls_no_verify )
+        {
+            // 로그에 흔적이 없는 완화된 TLS 는 실수와 구분되지 않음
+            // 그래서 부팅마다 한 번 WARN 으로 스스로를 알림
             ATLAS_LOG_WARN(
-                "ATLAS_DB_TLS_NO_VERIFY=1 — the database connection is encrypted but the server "
-                "certificate is NOT verified. Local/compose only; never production.");
+                "ATLAS_DB_TLS_NO_VERIFY=1 - the database connection is encrypted but the server "
+                "certificate is NOT verified. Local/compose only; never production." );
         }
 
-        // 🔴 architecture-design.md §10.2 — the cache is OPTIONAL and its absence is a warning,
-        // not a failure. An unset host means every load goes to the database, which is also what
-        // happens when Redis is reachable but a lookup fails: one degraded path, not two.
+        // [AD 10.2] 캐시는 선택. 없으면 경고이지 실패가 아님
+        // 미설정도 조회 실패도 결국 DB 로 가는 한 경로
         atlas::RedisConnectionConfig redis_config;
         redis_config.host = secrets.redis_host;
-        redis_config.port = secrets.redis_port == 0 ? atlas::UInt16{6379} : secrets.redis_port;
+        redis_config.port = secrets.redis_port == 0 ? atlas::UInt16{ 6379 } : secrets.redis_port;
         redis_config.password = secrets.redis_password;
-        if (redis_config.host.empty()) {
+        if ( redis_config.host.empty() )
+        {
             ATLAS_LOG_WARN(
-                "ATLAS_REDIS_HOST is unset — the character read cache and the exp ranking are off "
-                "and every character load goes to the database. See server/.env.example.");
+                "ATLAS_REDIS_HOST is unset - the character read cache and the exp ranking are off "
+                "and every character load goes to the database. See server/.env.example." );
         }
 
         atlas_demo::GameServer::Options options;
-        options.endpoint = atlas::Endpoint(atlas::Tcp::v4(), config.listen_port);
-        options.server_id = static_cast<atlas::UInt16>(config.server_id);
-        options.io_workers = static_cast<std::size_t>(config.io_workers);
+        options.endpoint = atlas::Endpoint( atlas::Tcp::v4(), config.listen_port );
+        options.server_id = static_cast< atlas::UInt16 >( config.server_id );
+        options.io_workers = static_cast< std::size_t >( config.io_workers );
         options.db_pool_size = kDbPoolSize;
         options.db_threads = kDbThreads;
 
-        atlas_demo::GameServer server(options, db_config, redis_config);
+        atlas_demo::GameServer server( options, db_config, redis_config );
 
-        // Graceful stop is separate from crash.cpp's fatal-signal path: it drains instead of
-        // producing a dump.
-        std::signal(SIGINT, &OnStopSignal);
-        std::signal(SIGTERM, &OnStopSignal);
+        // 우아한 종료는 crash.cpp 의 치명 시그널 경로와 별개. 덤프가 아니라 배수
+        std::signal( SIGINT, &OnStopSignal );
+        std::signal( SIGTERM, &OnStopSignal );
 
         server.Start();
 
-        // 🔴 Polled rather than an asio signal_set on the server's own io_context: the handler
-        // would run on a worker thread, and Stop() joins those workers — a thread cannot join
-        // itself.
+        // asio signal_set 대신 폴링
+        // 핸들러가 워커 스레드에서 돌면 워커를 join 하는 Stop() 이 자기를 join 함
         atlas::TimePoint next_counter_log = atlas::Clock::now() + kCounterInterval;
-        while (!g_stop_requested.load()) {
-            std::this_thread::sleep_for(atlas::Millis{200});
+        while ( !g_stop_requested.load() )
+        {
+            std::this_thread::sleep_for( atlas::Millis{ 200 } );
             const atlas::TimePoint now = atlas::Clock::now();
-            if (now < next_counter_log) {
+            if ( now < next_counter_log )
+            {
                 continue;
             }
             next_counter_log = now + kCounterInterval;
             const atlas_demo::GameServer::Counters counters = server.ReadCounters();
-            // 🔴 The queue depth is printed with its cap because a depth alone is unreadable: 40 is
-            // idle at one cap and a shed request away at another. `db_rejected` is what says the
-            // cap was actually reached.
+            // 큐 깊이를 상한과 함께 찍음
+            // 40 은 어떤 상한에서는 한가하고 다른 상한에서는 셰딩 직전
+            // 상한 도달 여부는 db_rejected 가 말함
             ATLAS_LOG_INFO(
                 "counters sessions={} db_queue={}/{} db_rejected={} db_acquire_timeouts={} "
                 "db_acquire_wait_us={}",
                 counters.live_sessions, counters.db_queue_depth, counters.db_queue_capacity,
                 counters.db_rejected, counters.db_acquire_failures,
-                counters.db_acquire_wait_micros);
+                counters.db_acquire_wait_micros );
         }
 
-        ATLAS_LOG_INFO("stop requested — draining");
+        ATLAS_LOG_INFO( "stop requested - draining" );
         server.Stop();
-        ATLAS_LOG_INFO("GAME stopped");
+        ATLAS_LOG_INFO( "GAME stopped" );
         atlas::LogShutdown();
         return 0;
-    } catch (const std::exception& failure) {
-        // Start-up failures land here: a port already taken, a database that refuses the
-        // credentials, a malformed ini. All of them must be loud and fatal rather than degraded.
-        ATLAS_LOG_FATAL("GAME failed to start: {}", failure.what());
+    }
+    catch ( const std::exception& failure )
+    {
+        // 기동 실패가 여기로 옴. 포트 선점 - 자격 거부 - 잘못된 ini
+        // 전부 저하가 아니라 크고 치명적이어야 함
+        ATLAS_LOG_FATAL( "GAME failed to start: {}", failure.what() );
         atlas::LogShutdown();
         return 70;
     }

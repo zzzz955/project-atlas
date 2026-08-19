@@ -1,4 +1,9 @@
 #pragma once
+
+// =============================================================================
+// [AD 5.1] 연결 종단. listen -> accept -> Session 생성 -> Start
+// =============================================================================
+
 #include <functional>
 #include <memory>
 
@@ -8,77 +13,63 @@
 #include "atlas/net/net_types.h"
 #include "atlas/net/session.h"
 
-namespace atlas {
+namespace atlas
+{
 
-// architecture-design.md §5.1 — connection termination. Listens, accepts, turns each accepted
-// socket into a Session, and starts it.
-//
-// The class is named `SessionAcceptor` rather than `Acceptor` because `atlas::Acceptor` is already
-// the alias for `tcp::acceptor` (net_types.h); the two names would collide in the same namespace.
-//
-// 🔴 The accept loop runs on its own strand, so the connection counter below needs no lock. The
-// object must outlive its pending accept: the shutdown order is
-//     acceptor.Stop()  ->  runner.Stop()  ->  destroy
-// (Stop posts the close onto the strand, so a runner that has already drained will never run it.)
-class SessionAcceptor {
+// 이름이 Acceptor 가 아닌 것은 net_types.h 의 별칭 때문이다
+// 같은 네임스페이스에서 atlas::Acceptor 와 충돌한다
+// [AD 9.1] accept 루프는 전용 strand
+// 종료 순서 Stop() -> runner.Stop() -> 소멸
+class SessionAcceptor
+{
 public:
-    // Called on the accept strand, after the Session exists and before it is started, which is the
-    // window in which the owner installs the session's own callbacks and takes ownership.
-    using AcceptHandler = std::function<void(const std::shared_ptr<Session>&)>;
+    // Session 생성 후 Start 전에 accept strand 에서 호출
+    // 소유자가 세션 콜백을 설치하고 소유권을 가져가는 창
+    using AcceptHandler = std::function< void( const std::shared_ptr< Session >& ) >;
 
-    // Opens, binds and listens immediately: a port that cannot be taken is a start-up failure, so
-    // it throws here rather than reporting an error_code nobody would be positioned to handle.
-    //
-    // `session_idle_timeout` is handed to every session this acceptor creates. It is defaulted
-    // because no server has a reason to override it — the tests do, and that is the whole point of
-    // it being a parameter (Session::kDefaultIdleTimeout says why the value is what it is).
-    SessionAcceptor(IoContext& io_context, const Endpoint& endpoint, AcceptHandler on_accept,
-                    Duration session_idle_timeout = Session::kDefaultIdleTimeout);
+    // open/bind/listen 을 즉시 수행. 포트 확보 실패는 기동 실패라 error_code 가 아니라 throw
+    // session_idle_timeout 이 인자인 이유는 테스트가 300s 를 기다릴 수 없기 때문
+    SessionAcceptor( IoContext& io_context, const Endpoint& endpoint, AcceptHandler on_accept,
+                     Duration session_idle_timeout = Session::kDefaultIdleTimeout );
 
-    SessionAcceptor(const SessionAcceptor&) = delete;
-    SessionAcceptor& operator=(const SessionAcceptor&) = delete;
-    SessionAcceptor(SessionAcceptor&&) = delete;
-    SessionAcceptor& operator=(SessionAcceptor&&) = delete;
+    SessionAcceptor( const SessionAcceptor& ) = delete;
+    SessionAcceptor& operator=( const SessionAcceptor& ) = delete;
+    SessionAcceptor( SessionAcceptor&& ) = delete;
+    SessionAcceptor& operator=( SessionAcceptor&& ) = delete;
     ~SessionAcceptor();
 
     void Start();
 
-    // Stops accepting. Safe from any thread; the close itself happens on the accept strand.
-    void Stop();
+    void Stop();  // accept 중단. close 자체는 accept strand 위
 
-    // Captured once at construction rather than queried from the socket, so reading it from
-    // another thread cannot race the accept loop. This is also how a caller learns the port the OS
-    // picked when it asked for port 0.
+    // 생성 시 1회 캡처라 소켓 조회가 없다
+    // 다른 스레드에서 읽어도 accept 루프와 경쟁하지 않는다
+    // port 0 을 요청했을 때 OS 가 고른 포트도 여기서 확인
     [[nodiscard]] const Endpoint& LocalEndpoint() const noexcept { return local_endpoint_; }
 
 private:
     void StartAcceptOnStrand();
-    void OnAcceptOnStrand(const ErrorCode& ec, Socket socket);
+    void OnAcceptOnStrand( const ErrorCode& ec, Socket socket );
     void RetryAcceptOnStrand();
     void CloseOnStrand();
 
-    // 🔴 An accept that fails because the process is out of descriptors (EMFILE/ENFILE) fails again
-    // immediately, so re-arming with no delay turns a resource shortage into a WARN flood at 100%
-    // CPU: the listener is alive and the process is unusable. A short fixed delay is the whole fix.
-    //
-    // 🔴 Deliberately NOT exponential. Growing the delay means carrying backoff state, and that
-    // state is a second state machine in a class whose correctness argument is that it has one.
-    // 100ms bounds the spin at ten attempts per second, which no longer starves anything.
-    static constexpr Duration kAcceptRetryDelay = Millis{100};
+    // EMFILE/ENFILE 로 실패한 accept 는 즉시 또 실패한다
+    // 지연 없이 재무장하면 WARN 폭주와 CPU 100% 가 된다
+    // 리스너는 살아 있는데 프로세스는 못 쓰게 된다
+    // 지수 백오프 아님 - 백오프 상태는 두 번째 상태 기계가 된다
+    static constexpr Duration kAcceptRetryDelay = Millis{ 100 };
 
     IoContext& io_context_;
     Acceptor acceptor_;
     Strand strand_;
-    // Lives on the accept strand like everything else here, so it needs no lock of its own.
-    SteadyTimer retry_timer_;
+    SteadyTimer retry_timer_;  // accept strand 소유라 별도 락 불필요
     Endpoint local_endpoint_;
     AcceptHandler accept_handler_;
     Duration session_idle_timeout_;
     Ctx ctx_;
-    // architecture-design.md §6 — the session tier of the identity ladder. Handed out from the
-    // accept strand, so a plain counter is correct here.
-    UInt64 next_session_id_{1};
-    bool closed_{false};
+    // [AD 6] 3계층 식별자의 세션 계층. accept strand 전용이라 평범한 카운터로 충분
+    UInt64 next_session_id_{ 1 };
+    bool closed_{ false };
 };
 
 }  // namespace atlas

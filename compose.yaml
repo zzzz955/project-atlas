@@ -1,17 +1,17 @@
 # project-atlas — 로컬 / 단일 호스트 compose (architecture-design.md §15.3)
 #
-# 🔴 CD는 Phase 1 비범위다(§3.4 · §15.3). 레지스트리 푸시 · 롤아웃 · 무중단 전환은 여기 없다.
+# CD는 Phase 1 비범위다(§3.4 · §15.3). 레지스트리 푸시 · 롤아웃 · 무중단 전환은 여기 없다.
 #    이 파일이 정하는 범위는 "compose 로 로컬/단일 호스트를 띄우는 데까지" 다.
 #    healthcheck 는 배포 판정용이 아니라 mysql 준비 대기(depends_on) 용도로만 쓴다.
 #
 # 자격증명은 server/.env 에만 있다(§5.4). server/.env 가 없으면 기동이 실패하는 것이 정상이다 —
 # 조용한 기본값을 두면 개발용 비밀번호가 레포에 박히는 경로가 정확히 그렇게 생긴다.
 #
-# 🔴 그래서 필수 변수는 전부 `${VAR:?메시지}` 다. 빠진 변수는 경고가 아니라 **에러**이고, 에러에
+# 그래서 필수 변수는 전부 `${VAR:?메시지}` 다. 빠진 변수는 경고가 아니라 **에러**이고, 에러에
 #    변수 이름이 찍힌다. 시작점은 항상 이것이다:
 #      cp server/.env.example server/.env    # 비-시크릿은 이미 채워져 있고, 비밀번호 2개만 넣으면 된다
 #
-# 🔴 `${...}` 치환은 compose **프로젝트 env-file** 에서 온다. 서비스의 `env_file:` 은 컨테이너에
+# `${...}` 치환은 compose **프로젝트 env-file** 에서 온다. 서비스의 `env_file:` 은 컨테이너에
 #    변수를 주입할 뿐 치환에는 쓰이지 않는다. 그래서 실제 기동은 항상 아래 형태다:
 #      docker compose --env-file server/.env up -d                    # mysql + redis
 #      docker compose --env-file server/.env --profile app  up -d     # + server (바이너리 생긴 뒤)
@@ -24,7 +24,7 @@ services:
     env_file:
       - server/.env
     environment:
-      # 🔴 `${VAR}` 는 미설정을 **경고 한 줄 뒤 빈 문자열**로 통과시킨다 — 빈 비밀번호로 DB가 뜨고,
+      # `${VAR}` 는 미설정을 **경고 한 줄 뒤 빈 문자열**로 통과시킨다 — 빈 비밀번호로 DB가 뜨고,
       #    무엇이 빠졌는지는 경고 더미에 묻힌다. `${VAR:?메시지}` 는 변수 이름과 함께 명령을 즉시
       #    죽인다. 포트처럼 진짜 기본값이 있는 값만 `:-` 를 쓴다.
       MYSQL_DATABASE: ${ATLAS_DB_NAME:?ATLAS_DB_NAME must be set (see server/.env.example)}
@@ -35,7 +35,7 @@ services:
       - "${ATLAS_DB_PORT:-3306}:3306"
     volumes:
       - atlas-mysql-data:/var/lib/mysql
-      # 🔴 schema.sql 은 db_generator 생성물이다. 복사본을 만들면 gen:check 밖에서 드리프트가
+      # schema.sql 은 db_generator 생성물이다. 복사본을 만들면 gen:check 밖에서 드리프트가
       #    생기므로 읽기 전용 바인드로 건다 — compose 는 이 파일을 절대 복제/수정하지 않는다.
       - ./server/generated/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
@@ -48,7 +48,7 @@ services:
   # 기본 기동 대상. 자리 표시가 아니라 실제 런타임 의존이 됐다 — server/vcpkg.json 이 `boost-redis`
   # 를 들고(§15.2), 서버가 이 인스턴스에 실제로 붙는다. 프로파일 뒤에 두면 `up -d` 로 뜬 스택이
   # 서버 기동에 못 미치는 상태가 되고, 그 차이는 접속 실패로만 드러난다.
-  # 🔴 §10.2 허용 역할표(읽기 캐시 · 분산 락 · WORLD 레지스트리 복구 사본) 밖의 용도로 쓰지 않는다.
+  # §10.2 허용 역할표(읽기 캐시 · 분산 락 · WORLD 레지스트리 복구 사본) 밖의 용도로 쓰지 않는다.
   #    특히 **서버 간 게임 트래픽 pub/sub 은 금지**다. 그것은 §5.2 "WORLD ↔ WORLD 직접통신 금지"를
   #    문자적으로만 지키면서 의미를 파괴하는 우회로이고, Phase 3 Relay 가 들어갈 자리를 없앤다.
   redis:
@@ -59,34 +59,34 @@ services:
     volumes:
       - atlas-redis-data:/data
 
-  # 🔴 기본 기동에서 제외 — 프로파일 `app` 뒤다. 이제 `ATLAS_ROLE=game` 은 실재하는 바이너리
+  # 기본 기동에서 제외 — 프로파일 `app` 뒤다. 이제 `ATLAS_ROLE=game` 은 실재하는 바이너리
   #    (/app/atlas_game)로 뜨고, `fe` / `world` 는 여전히 entrypoint 에서 exit 69 로 죽는다.
   #    없는 것을 있는 척 감싸지 않는다(§15.3) — role 하나가 생겼다고 나머지를 가리지 않는다.
   # 단일 이미지 + ATLAS_ROLE 분기 entrypoint: 서버 3종을 각각의 이미지로 굽지 않는다. role 별로
   # 배포 단위를 쪼개면 §5.2의 "WORLD 와 InterWorld 는 동일 바이너리" 명제가 이미지 층에서 깨진다.
   #
-  # 🔴 배포 후 버전 확인은 절차의 일부다(§15.3). 레이어 캐시는 어제 바이너리를 태연히 배포한다:
+  # 배포 후 버전 확인은 절차의 일부다(§15.3). 레이어 캐시는 어제 바이너리를 태연히 배포한다:
   #     docker run --rm --entrypoint cat project-atlas-server /app/VERSION
   server:
     profiles: [app]
     build:
       context: ./server
       dockerfile: Dockerfile
-      # 🔴 `target:` 은 생략할 수 없다. 생략하면 compose 는 Dockerfile 의 **마지막 스테이지**를
+      # `target:` 은 생략할 수 없다. 생략하면 compose 는 Dockerfile 의 **마지막 스테이지**를
       #    굽는데, §11.1a 가 심볼 반출용 `FROM scratch AS symbols` 를 뒤에 붙인 뒤로 그 마지막은
       #    runtime 이 아니다 — 결과는 9 MB 짜리 빈 이미지이고 `up -d` 가 `no command specified`
       #    로 죽는다. 스테이지를 추가할 때마다 이 줄이 지켜야 하는 것이 그것이다(§15.3).
       target: runtime
-      # 🔴 버전 각인. 이 두 값이 없으면 `/app/VERSION` 은 `revision=unknown` 이 되고, §15.3 이
+      # 버전 각인. 이 두 값이 없으면 `/app/VERSION` 은 `revision=unknown` 이 되고, §15.3 이
       #    "배포 절차의 일부"라고 못 박은 버전 확인이 아무것도 말하지 않는다. `ATLAS_GIT_SHA` 는
       #    빌더의 `-DATLAS_BUILD_ID` 까지 먹이므로(§11.1a) 비면 크래시 심볼의 build-id 도 함께
       #    빈다 — 즉 이건 표시용 문자열이 아니라 사고 분석의 좌표다.
       #
-      #    🔴 `.env` 에 넣지 않는다(§5.4): 이건 자격증명도 스택 설정도 아니라 **빌드마다 달라지는
+      #    `.env` 에 넣지 않는다(§5.4): 이건 자격증명도 스택 설정도 아니라 **빌드마다 달라지는
       #    값**이고, 파일에 적히는 순간 어제 값이 그대로 굳는다. 셸에서 준다:
       #      $env:ATLAS_GIT_SHA = (git rev-parse --short HEAD)
       #      $env:ATLAS_BUILD_TIME = (Get-Date).ToUniversalTime().ToString('s') + 'Z'
-      #    🔴 `-AsUTC` 는 PowerShell 7 전용이다. 이 레포의 셸은 Windows PowerShell 5.1 이고
+      #    `-AsUTC` 는 PowerShell 7 전용이다. 이 레포의 셸은 Windows PowerShell 5.1 이고
       #    거기서는 파라미터를 찾지 못해 변수가 **빈 문자열**이 된다 — `${VAR:-unknown}` 은
       #    미설정만 대체하므로 빈 값은 그대로 통과하고 `/app/VERSION` 의 `built=` 이 빈다.
       #      docker compose --env-file server/.env --profile app build server
@@ -101,18 +101,18 @@ services:
     env_file:
       - server/.env
     ports:
-      # GAME 의 수신 포트. 🔴 컨테이너 쪽 번호는 server/server.ini `[server] listen_port` 와 같은
+      # GAME 의 수신 포트. 컨테이너 쪽 번호는 server/server.ini `[server] listen_port` 와 같은
       # 값이어야 한다 — ini 는 이미지에 구워져 있고 compose 는 그 값을 알지 못하므로, 어긋나면
       # 컨테이너는 정상 기동하고 아무도 접속하지 못하는 형태로 조용히 실패한다.
       - "${ATLAS_GAME_PORT:-7777}:7777"
     environment:
-      # 🔴 기본값을 두지 않는다. entrypoint 는 ATLAS_ROLE 미설정을 기동 실패로 다루는데
+      # 기본값을 두지 않는다. entrypoint 는 ATLAS_ROLE 미설정을 기동 실패로 다루는데
       #    (scripts/entrypoint.sh · §15.3), compose 가 `:-game` 으로 조용히 채워 주면 그 방어가
       #    여기서 무력화되고 변수를 깜빡한 운영자는 엉뚱하게 GAME 서버를 얻는다. `:?` 로 즉시 실패.
       #    이 값은 배포층의 바이너리 선택이고, 런타임 정체성은 server.ini `[server] role` 이다 —
       #    둘은 반드시 같은 값이어야 한다.
       ATLAS_ROLE: ${ATLAS_ROLE:?ATLAS_ROLE must be set (fe | game | world | interworld)}
-      # 🔴 이 스택 전용 TLS 완화다. 값을 `${...}` 로 받지 않고 여기 **박아 둔** 이유가 그것이다 —
+      # 이 스택 전용 TLS 완화다. 값을 `${...}` 로 받지 않고 여기 **박아 둔** 이유가 그것이다 —
       #    켜는 결정이 파일에 보이지 않으면 조용한 다운그레이드가 된다(§15.2).
       #
       #    `mysql:8.4` 이미지는 최초 초기화 때 **자기 서명 CA** 를 만든다. MariaDB Connector/C 3.4 는
@@ -121,7 +121,7 @@ services:
       #    그 결과 GAME 컨테이너는 listen 도 못 해보고 exit 70 → restart 루프였다(2026-08-10 실측).
       #
       #    이 값이 1 이면 연결은 **여전히 암호화되지만**(ENFORCE) 서버 신원은 검증하지 않는다.
-      #    수동 도청은 막고 능동 MITM 은 막지 못한다. 🔴 운영 배포는 이렇게 뜨면 안 된다.
+      #    수동 도청은 막고 능동 MITM 은 막지 못한다. 운영 배포는 이렇게 뜨면 안 된다.
       #    서버는 부팅마다 이 사실을 WARN 으로 한 줄 찍는다(game/main.cpp).
       ATLAS_DB_TLS_NO_VERIFY: "1"
     depends_on:

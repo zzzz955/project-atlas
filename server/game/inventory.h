@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// [AD 3.3] 데모 게임의 인벤토리 / 장비 도메인과 그 영속화 경계
+// [AD 15.4] item - inventory - equip 은 denylist 라 코어에 못 쓰는 코드
+// =============================================================================
+
 #include <cstddef>
 #include <string_view>
 #include <vector>
@@ -8,111 +14,105 @@
 #include "atlas/db/connection.h"
 #include "generated/db/character_items_row.h"
 
-// The demo game's inventory / equipment domain (architecture-design.md §3.3 minimum set).
-//
-// 🔴 This file could not be written under server/atlas/**: `item`, `inventory` and `equip` are all
-// on tools/core_purity/denylist.txt, so the gate (§15.4) would fail the build. That is the boundary
-// working, not an obstacle to route around.
-//
-// 🔴 This file also owns the two prepared statements the generator does not emit. `db_generator`
-// emits CRUD by primary key; "every item of one character" and "whatever occupies one slot" are
-// game queries and belong to the game. They follow the same rule the runtime does
-// (architecture-design.md §10): fixed text with `?` placeholders, never assembled at run time.
+namespace atlas_demo
+{
 
-namespace atlas_demo {
-
-// 🔴 Three slots, fixed by the demo minimum set (§3.3, and the same sentence sits in
-// server/db/schema.json). `None` is the stored value 0 — "not equipped" — which is why the
-// uniqueness invariant below can only ever be an application rule.
-enum class EquipSlot : atlas::UInt8 { None = 0, Weapon = 1, Armor = 2, Trinket = 3 };
+// [AD 3.3] 슬롯 3개 고정. schema.json 에도 같은 문장이 있음
+// None 은 저장값 0 = 미장착
+enum class EquipSlot : atlas::UInt8
+{
+    None = 0,
+    Weapon = 1,
+    Armor = 2,
+    Trinket = 3
+};
 
 inline constexpr atlas::UInt8 kEquipSlotCount = 3;
 
-// True for a slot a caller may actually equip into. 🔴 `None` is not one of them: "equip into slot
-// 0" is an unequip request wearing an equip request's clothes, and letting it through would make
-// the two indistinguishable in the log.
-[[nodiscard]] constexpr bool IsEquippableSlot(EquipSlot slot) noexcept {
-    return static_cast<atlas::UInt8>(slot) >= 1U &&
-           static_cast<atlas::UInt8>(slot) <= kEquipSlotCount;
+// 실제로 장착 가능한 슬롯인지. None 은 여기 포함되지 않음
+// "슬롯 0 에 장착"은 해제 요청이 장착 요청 옷을 입은 것이라 로그에서 구분 불가
+[[nodiscard]] constexpr bool IsEquippableSlot( EquipSlot slot ) noexcept
+{
+    return static_cast< atlas::UInt8 >( slot ) >= 1U &&
+           static_cast< atlas::UInt8 >( slot ) <= kEquipSlotCount;
 }
 
-[[nodiscard]] std::string_view DescribeSlot(EquipSlot slot) noexcept;
+[[nodiscard]] std::string_view DescribeSlot( EquipSlot slot ) noexcept;
 
-// One item a character holds. The domain view of `character_items`; the row struct stays at the
-// persistence edge so the domain does not carry column metadata around.
-struct Item {
-    atlas::UInt64 item_uid{0};
-    atlas::UInt32 item_id{0};
-    atlas::UInt16 stack_count{1};
-    EquipSlot slot{EquipSlot::None};
+// 캐릭터가 든 아이템 1개
+// row 구조체는 영속화 경계에 남겨 도메인이 컬럼 메타를 들고 다니지 않게 함
+struct Item
+{
+    atlas::UInt64 item_uid{ 0 };
+    atlas::UInt32 item_id{ 0 };
+    atlas::UInt16 stack_count{ 1 };
+    EquipSlot slot{ EquipSlot::None };
 
     [[nodiscard]] bool Equipped() const noexcept { return slot != EquipSlot::None; }
 
-    friend bool operator==(const Item&, const Item&) = default;
+    friend bool operator==( const Item&, const Item& ) = default;
 };
 
-// One character's items, in memory.
-//
-// 🔴 THE "ONE ITEM PER SLOT" RULE IS AN APPLICATION INVARIANT, NOT A DATABASE CONSTRAINT. MySQL has
-// no partial unique index, so a UNIQUE that applies only where `equip_slot != 0` cannot be
-// declared (the same note is in server/db/schema.json and in the generated header). This class
-// enforces it for the in-memory copy; the durable half is enforced by the transaction in
-// equip_service.h. Neither one alone is sufficient, and that is exactly why the tests exist.
-class Inventory {
+// 한 캐릭터의 아이템, 메모리 사본
+// 슬롯당 1개는 애플리케이션 불변식
+// MySQL 에 부분 유니크 인덱스가 없어 equip_slot != 0 조건부 UNIQUE 선언 불가
+// 지속 쪽은 equip_service 가 맡음
+class Inventory
+{
 public:
-    void Add(const Item& item);
+    void Add( const Item& item );
     void Clear() noexcept { items_.clear(); }
 
     [[nodiscard]] std::size_t Size() const noexcept { return items_.size(); }
-    [[nodiscard]] const std::vector<Item>& All() const noexcept { return items_; }
+    [[nodiscard]] const std::vector< Item >& All() const noexcept { return items_; }
 
-    // Non-owning observers, null when there is nothing to point at (cpp-style.md §4.4).
-    [[nodiscard]] const Item* Find(atlas::UInt64 item_uid) const noexcept;
-    [[nodiscard]] const Item* EquippedAt(EquipSlot slot) const noexcept;
+    // [CS 4.4] 비소유 관찰자. 가리킬 것이 없으면 null
+    [[nodiscard]] const Item* Find( atlas::UInt64 item_uid ) const noexcept;
+    [[nodiscard]] const Item* EquippedAt( EquipSlot slot ) const noexcept;
 
-    // Moves `item_uid` into `slot`, unequipping whatever was there. Returns false when the item is
-    // not held or the slot is not equippable — an expected failure, so not an exception
-    // (architecture-design.md §11.2a).
-    bool Equip(atlas::UInt64 item_uid, EquipSlot slot) noexcept;
+    // item_uid 를 slot 으로 옮기고 기존 점유자는 해제
+    // [AD 11.2a] 미보유 - 장착 불가 슬롯은 예상된 실패라 예외가 아닌 false
+    bool Equip( atlas::UInt64 item_uid, EquipSlot slot ) noexcept;
 
 private:
-    // A flat vector, not a map keyed by uid. A demo character holds a handful of items and a linear
-    // scan beats a node per item; the day that stops being true the measurement will say so
-    // (§11.3 — the same reasoning that keeps the lock-free queue out).
-    std::vector<Item> items_;
+    // uid 맵이 아니라 평평한 vector. 데모 캐릭터는 아이템이 몇 개뿐
+    // [AD 11.3] 선형 탐색이 아이템당 노드보다 나음. 바뀌면 측정이 먼저 말함
+    std::vector< Item > items_;
 };
 
-// ── The persistence edge ─────────────────────────────────────────────────────────────────────
-// 🔴 atlas/db is generic on purpose (§10.3): it binds columns as values and knows no table, because
-// core-purity forbids the core from including a generated row header. The mapper that knows both
-// therefore lives HERE, above the core. This is the seam that decision creates, made concrete.
+// =============================================================================
+// 영속화 경계
+// =============================================================================
 
-[[nodiscard]] Item ItemFromRow(const atlas::generated::CharacterItemsRow& row);
+// [AD 10.3] atlas/db 는 컬럼을 값으로 바인딩할 뿐 테이블을 모름
+// core-purity 가 코어의 생성 헤더 include 를 막으므로 매퍼는 코어 위 여기에 있음
 
-// Reads a result row selected in the generated column order into the generated row struct.
-[[nodiscard]] atlas::generated::CharacterItemsRow CharacterItemsRowFromDb(const atlas::DbRow& row);
+[[nodiscard]] Item ItemFromRow( const atlas::generated::CharacterItemsRow& row );
 
-// Binding parameters for `kCharacterItemsUpdateByPkSql`, in the generated binding order.
-// 🔴 The key columns bind LAST in an UPDATE, which is precisely why the generated binding array is
-// walked instead of the column order being assumed.
-[[nodiscard]] std::vector<atlas::DbValue> CharacterItemsUpdateParameters(
-    const atlas::generated::CharacterItemsRow& row);
+[[nodiscard]] atlas::generated::CharacterItemsRow CharacterItemsRowFromDb(
+    const atlas::DbRow& row );
 
-// Every item of one character, in the generated column order so the mapper above can read it.
+// UPDATE 는 키 컬럼이 마지막에 바인딩됨
+// 컬럼 순서를 가정하지 않고 생성된 바인딩 배열을 그대로 순회
+[[nodiscard]] std::vector< atlas::DbValue > CharacterItemsUpdateParameters(
+    const atlas::generated::CharacterItemsRow& row );
+
+// [AD 10] db_generator 는 기본키 CRUD 만 냄. 게임 질의는 게임이 소유
+// 런타임 조립 없이 ? 자리표시자 고정 텍스트라는 규칙은 같음
+
+// 한 캐릭터의 모든 아이템. 위 매퍼가 읽도록 생성된 컬럼 순서
 inline constexpr std::string_view kSelectItemsByCharacterSql =
     "SELECT `server_id`, `character_id`, `item_uid`, `item_id`, `stack_count`, `equip_slot` "
     "FROM `character_items` WHERE `server_id` = ? AND `character_id` = ?";
 
-// 🔴 One item by (server, uid) — deliberately WITHOUT `character_id` in the WHERE clause. Scoping
-// the lookup to the requesting character would make "someone else's item" indistinguishable from
-// "no such item", and §8.2 layer 3 (server authority) is precisely the check that the requester
-// owns what it is asking about. The ownership test belongs in the application, where it can be
-// answered and logged, not hidden in a predicate.
+// (server, uid) 로 아이템 1개. WHERE 에 character_id 를 일부러 넣지 않음
+// [AD 8.2] 조회를 요청자로 좁히면 "남의 아이템"과 "없는 아이템"이 구분되지 않음
+// 소유 검사는 답하고 로그로 남길 수 있는 애플리케이션의 몫
 inline constexpr std::string_view kSelectItemByUidSql =
     "SELECT `server_id`, `character_id`, `item_uid`, `item_id`, `stack_count`, `equip_slot` "
     "FROM `character_items` WHERE `server_id` = ? AND `item_uid` = ?";
 
-// Whatever currently occupies one slot. Served by idx_character_items_equip_slot.
+// 현재 그 슬롯을 점유한 것. idx_character_items_equip_slot 이 처리
 inline constexpr std::string_view kSelectItemsInSlotSql =
     "SELECT `server_id`, `character_id`, `item_uid`, `item_id`, `stack_count`, `equip_slot` "
     "FROM `character_items` "

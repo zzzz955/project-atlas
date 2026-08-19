@@ -1,3 +1,8 @@
+// =============================================================================
+// [AD 10.1] ORM 런타임 통합 스위트. 실제 MySQL 에 붙어 돌아감
+// docker compose --env-file server/.env up -d mysql
+// =============================================================================
+
 #include <gtest/gtest.h>
 
 #include <array>
@@ -32,21 +37,14 @@
 #include "generated/db/characters_row.h"
 #include "tests/optional_assert.h"
 
-// Integration suite for the ORM runtime (architecture-design.md §10.1). It talks to a REAL MySQL —
-// `docker compose --env-file server/.env up -d mysql` — because the things under test are exactly
-// the ones a fake cannot have: prepared-statement reuse, transaction visibility, and a driver that
-// blocks the calling thread.
-//
-// 🔴 With no database reachable the suite SKIPS and says so. It never passes quietly: a green run
-// that proved nothing is worse than a red one, because it retires the question. ctest reports these
-// as "Skipped" via the SKIP_REGULAR_EXPRESSION set in tests/CMakeLists.txt.
-//
-// 🔴 This file is where the generated statements (server/generated/db) meet the runtime. atlas/db
-// itself may not include them — core-purity (§15.4) forbids server/atlas/** from reaching into
-// server/generated/**, and the row headers carry demo-game vocabulary — so the runtime stays
-// generic and the row mapping lives above the core. A test is above the core.
+// 가짜가 가질 수 없는 것만 대상으로 삼는다
+// prepared statement 재사용, 트랜잭션 가시성, 호출 스레드를 막는 드라이버
+// DB 가 안 닿으면 SKIP 하고 그렇게 말한다. 못 증명한 초록은 빨강보다 나쁘다
+// [AD 15.4] core-purity 가 atlas/** -> generated/** 를 금지한다
+// 그래서 런타임은 범용으로 두고 행 매핑은 코어 위에 둔다
 
-namespace {
+namespace
+{
 
 using atlas::CharacterId;
 using atlas::Ctx;
@@ -59,73 +57,80 @@ using atlas::TxState;
 using atlas::UInt16;
 using atlas::UInt64;
 
-// A server_id no other suite and no seeded data uses, so every row this file writes is its own.
+// 다른 스위트도 시드 데이터도 쓰지 않는 server_id. 이 파일이 쓴 행만 남음
 constexpr UInt64 kTestServerId = 30001;
 
-// Fixed text with one placeholder, like everything else in this layer — nothing is concatenated.
+// 이 계층의 다른 것들처럼 고정 텍스트 + 플레이스홀더. 문자열 연결 없음
 constexpr std::string_view kDeleteAllForServerSql =
     "DELETE FROM `characters` WHERE `server_id` = ?";
 
-std::optional<DbConnectionConfig> LoadConfig() {
+std::optional< DbConnectionConfig > LoadConfig()
+{
     const atlas::SecretConfig secrets = atlas::SecretConfig::FromEnvironment();
-    if (secrets.db_host.empty() || secrets.db_name.empty() || secrets.db_user.empty()) {
+    if ( secrets.db_host.empty() || secrets.db_name.empty() || secrets.db_user.empty() )
+    {
         return std::nullopt;
     }
     DbConnectionConfig config;
     config.host = secrets.db_host;
-    config.port = secrets.db_port == 0 ? UInt16{3306} : secrets.db_port;
+    config.port = secrets.db_port == 0 ? UInt16{ 3306 } : secrets.db_port;
     config.database = secrets.db_name;
     config.user = secrets.db_user;
     config.password = secrets.db_password;
-    // See game_equip_test.cpp — the suite connects on the same TLS terms as the server.
+    // game_equip_test.cpp 참고. 스위트도 서버와 같은 TLS 조건으로 접속
     config.tls_no_verify = secrets.db_tls_no_verify;
-#if defined(ATLAS_MARIADB_PLUGIN_DIR)
-    // Baked in at configure time, the same way the config suite is handed the committed server.ini
-    // path. Deriving it from the working directory would make the suite pass under ctest and skip
-    // everywhere else — and the skip would blame the credentials (see the note in connection.h).
+#if defined( ATLAS_MARIADB_PLUGIN_DIR )
+    // configure 시점에 박음. 작업 디렉터리 유도면 ctest 밖에선 전부 skip
     config.plugin_directory = ATLAS_MARIADB_PLUGIN_DIR;
 #endif
     return config;
 }
 
-// Truncated to whole seconds: schema.sql declares DATETIME with no fractional part, so a value with
-// microseconds would not survive the round trip and the comparison would be testing the schema
-// rather than the layer.
-SysTime NowToSecond() { return std::chrono::floor<std::chrono::seconds>(atlas::SysClock::now()); }
-
-std::vector<DbValue> MakeCharacterRow(UInt64 character_id, const std::string& name,
-                                      SysTime created_at) {
-    // Binding order is kCharactersInsertBinding — the generated declaration order.
-    return {DbValue{kTestServerId}, DbValue{character_id},
-            DbValue{UInt64{9001}},  DbValue{name},
-            DbValue{Int64{12}},     DbValue{Int64{-34}},
-            DbValue{UInt64{7}},     DbValue{UInt64{4242}},
-            DbValue{created_at},    DbValue{std::monostate{}}};
+// 초 단위 절삭. schema.sql 의 DATETIME 에는 소수부가 없다
+// 마이크로초가 든 값은 왕복을 넘기지 못한다
+// 그러면 비교가 계층이 아니라 스키마를 시험하게 된다
+SysTime NowToSecond()
+{
+    return std::chrono::floor< std::chrono::seconds >( atlas::SysClock::now() );
 }
 
-// 🔴 How a connection dies for real: the SERVER closes it (a restart, or wait_timeout expiring on
-// an idle one) while the pool still believes it owns a live socket. `KILL` from a second connection
-// reproduces exactly that, without stopping the container the whole suite shares. Both statements
-// are fixed text with a placeholder, like everything else in this layer.
+std::vector< DbValue > MakeCharacterRow( UInt64 character_id, const std::string& name,
+                                         SysTime created_at )
+{
+    // 바인딩 순서는 kCharactersInsertBinding. 생성된 선언 순서
+    return { DbValue{ kTestServerId },  DbValue{ character_id },
+             DbValue{ UInt64{ 9001 } }, DbValue{ name },
+             DbValue{ Int64{ 12 } },    DbValue{ Int64{ -34 } },
+             DbValue{ UInt64{ 7 } },    DbValue{ UInt64{ 4242 } },
+             DbValue{ created_at },     DbValue{ std::monostate{} } };
+}
+
+// 연결이 실제로 죽는 방식은 서버 쪽이 닫는 것(재시작, 유휴 wait_timeout 만료)
+// 다른 연결의 KILL 이 공유 컨테이너를 세우지 않고 그 상황을 그대로 재현
 constexpr std::string_view kConnectionIdSql = "SELECT CONNECTION_ID()";
 constexpr std::string_view kKillConnectionSql = "KILL ?";
 
-UInt64 DriverConnectionId(atlas::Connection& connection) {
-    const std::vector<DbValue> no_parameters;
-    const std::vector<DbRow> rows = connection.Prepare(kConnectionIdSql).Query(no_parameters);
-    return rows.empty() ? UInt64{0} : std::get<UInt64>(rows[0][0]);
+UInt64 DriverConnectionId( atlas::Connection& connection )
+{
+    const std::vector< DbValue > no_parameters;
+    const std::vector< DbRow > rows = connection.Prepare( kConnectionIdSql ).Query( no_parameters );
+    return rows.empty() ? UInt64{ 0 } : std::get< UInt64 >( rows[0][0] );
 }
 
-void KillDriverConnection(atlas::Connection& killer, UInt64 connection_id) {
-    const std::vector<DbValue> parameters{DbValue{connection_id}};
-    killer.Prepare(kKillConnectionSql).Execute(parameters);
+void KillDriverConnection( atlas::Connection& killer, UInt64 connection_id )
+{
+    const std::vector< DbValue > parameters{ DbValue{ connection_id } };
+    killer.Prepare( kKillConnectionSql ).Execute( parameters );
 }
 
-class DbRuntimeTest : public ::testing::Test {
+class DbRuntimeTest : public ::testing::Test
+{
 protected:
-    void SetUp() override {
-        std::optional<DbConnectionConfig> loaded = LoadConfig();
-        if (!loaded.has_value()) {
+    void SetUp() override
+    {
+        std::optional< DbConnectionConfig > loaded = LoadConfig();
+        if ( !loaded.has_value() )
+        {
             GTEST_SKIP() << "SKIPPED: no database configured. Set ATLAS_DB_HOST / ATLAS_DB_NAME / "
                             "ATLAS_DB_USER (and ATLAS_DB_PASSWORD) and start MySQL with "
                             "`docker compose --env-file server/.env up -d mysql`. Running from the "
@@ -134,398 +139,427 @@ protected:
         }
         config_ = *loaded;
 
-        try {
-            probe_ = std::make_unique<atlas::Connection>(config_);
-        } catch (const std::exception& ex) {
+        try
+        {
+            probe_ = std::make_unique< atlas::Connection >( config_ );
+        }
+        catch ( const std::exception& ex )
+        {
             GTEST_SKIP() << "SKIPPED: ATLAS_DB_HOST is set but the database refused the "
                             "connection: "
                          << ex.what();
         }
-        Cleanup(*probe_);
+        Cleanup( *probe_ );
     }
 
-    void TearDown() override {
-        if (probe_) {
-            Cleanup(*probe_);
+    void TearDown() override
+    {
+        if ( probe_ )
+        {
+            Cleanup( *probe_ );
         }
     }
 
-    static void Cleanup(atlas::Connection& connection) {
-        const std::array<DbValue, 1> parameters{DbValue{kTestServerId}};
-        connection.Prepare(kDeleteAllForServerSql).Execute(parameters);
+    static void Cleanup( atlas::Connection& connection )
+    {
+        const std::array< DbValue, 1 > parameters{ DbValue{ kTestServerId } };
+        connection.Prepare( kDeleteAllForServerSql ).Execute( parameters );
     }
 
-    static std::vector<DbRow> SelectByPk(atlas::Connection& connection, UInt64 character_id) {
-        const std::array<DbValue, 2> parameters{DbValue{kTestServerId}, DbValue{character_id}};
-        return connection.Prepare(atlas::generated::kCharactersSelectByPkSql).Query(parameters);
+    static std::vector< DbRow > SelectByPk( atlas::Connection& connection, UInt64 character_id )
+    {
+        const std::array< DbValue, 2 > parameters{ DbValue{ kTestServerId },
+                                                   DbValue{ character_id } };
+        return connection.Prepare( atlas::generated::kCharactersSelectByPkSql ).Query( parameters );
     }
 
     DbConnectionConfig config_{};
-    std::unique_ptr<atlas::Connection> probe_;
+    std::unique_ptr< atlas::Connection > probe_;
 };
 
-TEST_F(DbRuntimeTest, PoolLeasesUpToItsSizeAndThenMakesTheNextCallerWait) {
-    atlas::ConnectionPool pool(config_, 2);
-    ASSERT_EQ(pool.Size(), 2U);
-    ASSERT_EQ(pool.Available(), 2U);
+TEST_F( DbRuntimeTest, PoolLeasesUpToItsSizeAndThenMakesTheNextCallerWait )
+{
+    atlas::ConnectionPool pool( config_, 2 );
+    ASSERT_EQ( pool.Size(), 2U );
+    ASSERT_EQ( pool.Available(), 2U );
 
-    std::optional<atlas::PooledConnection> first = pool.Acquire(atlas::Seconds{2});
-    std::optional<atlas::PooledConnection> second = pool.Acquire(atlas::Seconds{2});
-    ASSERT_TRUE(first.has_value());
-    ASSERT_TRUE(second.has_value());
-    EXPECT_EQ(pool.Available(), 0U);
+    std::optional< atlas::PooledConnection > first = pool.Acquire( atlas::Seconds{ 2 } );
+    std::optional< atlas::PooledConnection > second = pool.Acquire( atlas::Seconds{ 2 } );
+    ASSERT_TRUE( first.has_value() );
+    ASSERT_TRUE( second.has_value() );
+    EXPECT_EQ( pool.Available(), 0U );
 
-    // The pool is empty, so this one cannot be served.
-    EXPECT_FALSE(pool.Acquire(atlas::Millis{100}).has_value());
+    EXPECT_FALSE( pool.Acquire( atlas::Millis{ 100 } ).has_value() );
 
-    // Returning a lease is what unblocks it, and the RAII scope is what returns it.
+    // 리스를 돌려줘야 풀리고, 그 반납을 하는 것이 RAII 범위
     first.reset();
-    EXPECT_EQ(pool.Available(), 1U);
-    std::optional<atlas::PooledConnection> third = pool.Acquire(atlas::Seconds{2});
-    EXPECT_TRUE(third.has_value());
+    EXPECT_EQ( pool.Available(), 1U );
+    std::optional< atlas::PooledConnection > third = pool.Acquire( atlas::Seconds{ 2 } );
+    EXPECT_TRUE( third.has_value() );
 }
 
-TEST_F(DbRuntimeTest, ExhaustedPoolFailsAfterTheTimeoutInsteadOfWaitingForever) {
-    atlas::ConnectionPool pool(config_, 1);
-    const std::optional<atlas::PooledConnection> held = pool.Acquire(atlas::Seconds{2});
-    ASSERT_TRUE(held.has_value());
+TEST_F( DbRuntimeTest, ExhaustedPoolFailsAfterTheTimeoutInsteadOfWaitingForever )
+{
+    atlas::ConnectionPool pool( config_, 1 );
+    const std::optional< atlas::PooledConnection > held = pool.Acquire( atlas::Seconds{ 2 } );
+    ASSERT_TRUE( held.has_value() );
 
     const atlas::TimePoint started = atlas::Clock::now();
-    const std::optional<atlas::PooledConnection> denied = pool.Acquire(atlas::Millis{250});
+    const std::optional< atlas::PooledConnection > denied = pool.Acquire( atlas::Millis{ 250 } );
     const atlas::Duration elapsed = atlas::Clock::now() - started;
 
-    EXPECT_FALSE(denied.has_value());
-    // It really waited, and it really stopped.
-    EXPECT_GE(elapsed, atlas::Millis{200});
-    EXPECT_LT(elapsed, atlas::Seconds{5});
+    EXPECT_FALSE( denied.has_value() );
+    EXPECT_GE( elapsed, atlas::Millis{ 200 } );
+    EXPECT_LT( elapsed, atlas::Seconds{ 5 } );
 }
 
-TEST_F(DbRuntimeTest, ACachedStatementIsNotPreparedTwice) {
-    atlas::Connection connection(config_);
-    EXPECT_EQ(connection.PrepareCount(), 0U);
+TEST_F( DbRuntimeTest, ACachedStatementIsNotPreparedTwice )
+{
+    atlas::Connection connection( config_ );
+    EXPECT_EQ( connection.PrepareCount(), 0U );
 
     atlas::PreparedStatement& first =
-        connection.Prepare(atlas::generated::kCharactersSelectByPkSql);
-    EXPECT_EQ(connection.PrepareCount(), 1U);
+        connection.Prepare( atlas::generated::kCharactersSelectByPkSql );
+    EXPECT_EQ( connection.PrepareCount(), 1U );
 
     atlas::PreparedStatement& second =
-        connection.Prepare(atlas::generated::kCharactersSelectByPkSql);
-    // Same object, and the counter did not move: zero re-preparations.
-    EXPECT_EQ(&first, &second);
-    EXPECT_EQ(connection.PrepareCount(), 1U);
+        connection.Prepare( atlas::generated::kCharactersSelectByPkSql );
+    // 같은 객체이고 카운터도 그대로. 재준비 0회
+    EXPECT_EQ( &first, &second );
+    EXPECT_EQ( connection.PrepareCount(), 1U );
 
-    connection.Prepare(atlas::generated::kCharactersInsertSql);
-    EXPECT_EQ(connection.PrepareCount(), 2U);
+    connection.Prepare( atlas::generated::kCharactersInsertSql );
+    EXPECT_EQ( connection.PrepareCount(), 2U );
 
-    // The generated statement text and the generated binding order agree at compile time; this
-    // asserts the server agrees too.
-    EXPECT_EQ(first.ParameterCount(), atlas::generated::kCharactersSelectByPkBinding.size());
+    // 생성된 statement 텍스트와 바인딩 순서는 컴파일 타임에 합의. 서버도 같은지 확인
+    EXPECT_EQ( first.ParameterCount(), atlas::generated::kCharactersSelectByPkBinding.size() );
 }
 
-TEST_F(DbRuntimeTest, CommittedTransactionIsVisibleAfterwards) {
-    atlas::Connection writer(config_);
+TEST_F( DbRuntimeTest, CommittedTransactionIsVisibleAfterwards )
+{
+    atlas::Connection writer( config_ );
     Ctx ctx;
     ctx.trace_id = 4711;
 
     const SysTime created_at = NowToSecond();
-    const std::vector<DbValue> row = MakeCharacterRow(101, "commit-case", created_at);
+    const std::vector< DbValue > row = MakeCharacterRow( 101, "commit-case", created_at );
     {
-        atlas::Transaction transaction(writer, ctx);
-        EXPECT_EQ(ctx.tx_state, TxState::Active);
-        EXPECT_EQ(writer.Prepare(atlas::generated::kCharactersInsertSql).Execute(row), 1U);
+        atlas::Transaction transaction( writer, ctx );
+        EXPECT_EQ( ctx.tx_state, TxState::Active );
+        EXPECT_EQ( writer.Prepare( atlas::generated::kCharactersInsertSql ).Execute( row ), 1U );
         transaction.Commit();
     }
-    EXPECT_EQ(ctx.tx_state, TxState::Committed);
+    EXPECT_EQ( ctx.tx_state, TxState::Committed );
 
-    // Read on a DIFFERENT connection: a value only the writing session can see is not committed.
-    atlas::Connection reader(config_);
-    const std::vector<DbRow> found = SelectByPk(reader, 101);
-    ASSERT_EQ(found.size(), 1U);
-    ASSERT_EQ(found[0].size(), atlas::generated::kCharactersColumnCount);
+    // 다른 연결에서 읽음. 쓰는 세션만 볼 수 있는 값은 커밋된 것이 아님
+    atlas::Connection reader( config_ );
+    const std::vector< DbRow > found = SelectByPk( reader, 101 );
+    ASSERT_EQ( found.size(), 1U );
+    ASSERT_EQ( found[0].size(), atlas::generated::kCharactersColumnCount );
 
-    EXPECT_EQ(std::get<UInt64>(found[0][atlas::generated::kCharactersColServerId]), kTestServerId);
-    EXPECT_EQ(std::get<std::string>(found[0][atlas::generated::kCharactersColName]), "commit-case");
-    // A signed column comes back signed, and the negative value proves the unsigned flag is being
-    // read from the field rather than assumed.
-    EXPECT_EQ(std::get<Int64>(found[0][atlas::generated::kCharactersColPosY]), -34);
-    EXPECT_EQ(std::get<SysTime>(found[0][atlas::generated::kCharactersColCreatedAt]), created_at);
-    // A NULL column is monostate, not a zero value.
-    EXPECT_TRUE(std::holds_alternative<std::monostate>(
-        found[0][atlas::generated::kCharactersColLastLoginAt]));
+    EXPECT_EQ( std::get< UInt64 >( found[0][atlas::generated::kCharactersColServerId] ),
+               kTestServerId );
+    EXPECT_EQ( std::get< std::string >( found[0][atlas::generated::kCharactersColName] ),
+               "commit-case" );
+    // 음수는 unsigned 플래그를 가정이 아니라 필드에서 읽고 있다는 증거
+    EXPECT_EQ( std::get< Int64 >( found[0][atlas::generated::kCharactersColPosY] ), -34 );
+    EXPECT_EQ( std::get< SysTime >( found[0][atlas::generated::kCharactersColCreatedAt] ),
+               created_at );
+    // NULL 컬럼은 0 값이 아니라 monostate
+    EXPECT_TRUE( std::holds_alternative< std::monostate >(
+        found[0][atlas::generated::kCharactersColLastLoginAt] ) );
 }
 
-TEST_F(DbRuntimeTest, TransactionRollsBackWhenTheScopeUnwindsInsideGuarded) {
-    atlas::Connection writer(config_);
+TEST_F( DbRuntimeTest, TransactionRollsBackWhenTheScopeUnwindsInsideGuarded )
+{
+    atlas::Connection writer( config_ );
     Ctx ctx;
     ctx.trace_id = 4712;
-    ctx.character_id = CharacterId{102};
+    ctx.character_id = CharacterId{ 102 };
 
-    const std::vector<DbValue> row = MakeCharacterRow(102, "rollback-case", NowToSecond());
+    const std::vector< DbValue > row = MakeCharacterRow( 102, "rollback-case", NowToSecond() );
 
-    // 🔴 Run it through the real guard, not a bare try/catch: architecture-design.md §10 says the
-    // RAII scope and the exception guard are one set, and §11.2b routes every handler through
-    // Guarded. What must hold is that the guard swallowing the throw still leaves the ledger
-    // saying a transaction was open and got rolled back.
-    atlas::Guarded(ctx, [&] {
-        atlas::Transaction transaction(writer, ctx);
-        writer.Prepare(atlas::generated::kCharactersInsertSql).Execute(row);
-        throw std::runtime_error("deliberate failure inside the transaction scope");
-    })();
+    // [AD 10] 맨 try/catch 가 아니라 진짜 가드로 돌린다
+    // RAII 범위와 예외 가드는 한 세트
+    // 가드가 throw 를 삼켜도 원장엔 열림 -> 롤백이 남아야 한다
+    atlas::Guarded(
+        ctx,
+        [&]
+        {
+            atlas::Transaction transaction( writer, ctx );
+            writer.Prepare( atlas::generated::kCharactersInsertSql ).Execute( row );
+            throw std::runtime_error( "deliberate failure inside the transaction scope" );
+        } )();
 
-    // Guarded restored the thread_local ledger on exit, so this assertion is only possible because
-    // Transaction writes through the CALLER's Ctx (transaction.h explains why).
-    EXPECT_EQ(ctx.tx_state, TxState::RolledBack);
+    // 이 단언이 가능한 것은 Transaction 이 호출자의 Ctx 에 직접 쓰기 때문
+    EXPECT_EQ( ctx.tx_state, TxState::RolledBack );
 
-    atlas::Connection reader(config_);
-    EXPECT_TRUE(SelectByPk(reader, 102).empty());
+    atlas::Connection reader( config_ );
+    EXPECT_TRUE( SelectByPk( reader, 102 ).empty() );
 }
 
-TEST_F(DbRuntimeTest, PoolRevivesAConnectionTheServerClosedUnderneathIt) {
-    atlas::ConnectionPool pool(config_, 1);
+TEST_F( DbRuntimeTest, PoolRevivesAConnectionTheServerClosedUnderneathIt )
+{
+    atlas::ConnectionPool pool( config_, 1 );
 
     UInt64 killed_id = 0;
     {
-        std::optional<atlas::PooledConnection> lease = pool.Acquire(atlas::Seconds{2});
-        ATLAS_ASSERT_HAS_VALUE(lease);
-        killed_id = DriverConnectionId(**lease);
-        KillDriverConnection(*probe_, killed_id);
-    }  // The dead connection goes back to the pool, exactly as it would in production.
+        std::optional< atlas::PooledConnection > lease = pool.Acquire( atlas::Seconds{ 2 } );
+        ATLAS_ASSERT_HAS_VALUE( lease );
+        killed_id = DriverConnectionId( **lease );
+        KillDriverConnection( *probe_, killed_id );
+    }  // 죽은 연결이 운영에서와 똑같이 풀로 돌아감
 
-    // 🔴 No process restart between these two lines. That is the entire claim: before this node the
-    // pool handed the corpse back out and every request after a MySQL restart failed forever.
-    std::optional<atlas::PooledConnection> revived = pool.Acquire(atlas::Seconds{5});
-    ATLAS_ASSERT_HAS_VALUE(revived);
-    // Bound once right after the guard: the optional is never dereferenced again, least of all
-    // inside an EXPECT_ macro body, which is where the dataflow check loses the checked location.
+    // 이 사이에 프로세스 재시작 없음. 예전엔 풀이 시체를 다시 내줬음
+    std::optional< atlas::PooledConnection > revived = pool.Acquire( atlas::Seconds{ 5 } );
+    ATLAS_ASSERT_HAS_VALUE( revived );
+    // 가드 직후 한 번만 묶음. EXPECT_ 본문 안에서 다시 deref 하지 않음
     atlas::PooledConnection& lease = *revived;
 
-    // A different server-side thread id, so it really is a new socket and not the killed one
-    // answering; and it serves a real statement, which is the only proof the handle is usable.
-    EXPECT_NE(DriverConnectionId(*lease), killed_id);
-    const std::vector<DbValue> parameters{DbValue{kTestServerId}};
-    EXPECT_NO_THROW(lease->Prepare(kDeleteAllForServerSql).Execute(parameters));
+    // 서버 쪽 스레드 id 가 달라야 새 소켓. 실제 statement 를 처리해야 쓸 수 있는 핸들
+    EXPECT_NE( DriverConnectionId( *lease ), killed_id );
+    const std::vector< DbValue > parameters{ DbValue{ kTestServerId } };
+    EXPECT_NO_THROW( lease->Prepare( kDeleteAllForServerSql ).Execute( parameters ) );
 }
 
-TEST_F(DbRuntimeTest, ReconnectDropsThePreparedStatementCache) {
-    atlas::Connection connection(config_);
-    const UInt64 killed_id = DriverConnectionId(connection);
-    connection.Prepare(atlas::generated::kCharactersSelectByPkSql);
+TEST_F( DbRuntimeTest, ReconnectDropsThePreparedStatementCache )
+{
+    atlas::Connection connection( config_ );
+    const UInt64 killed_id = DriverConnectionId( connection );
+    connection.Prepare( atlas::generated::kCharactersSelectByPkSql );
     const UInt64 prepared_before = connection.PrepareCount();
-    ASSERT_EQ(prepared_before, 2U);
+    ASSERT_EQ( prepared_before, 2U );
 
-    KillDriverConnection(*probe_, killed_id);
-    ASSERT_TRUE(connection.EnsureAlive());
-    EXPECT_NE(DriverConnectionId(connection), killed_id);
+    KillDriverConnection( *probe_, killed_id );
+    ASSERT_TRUE( connection.EnsureAlive() );
+    EXPECT_NE( DriverConnectionId( connection ), killed_id );
 
-    // 🔴 The evidence is the counter, not a pointer comparison: the old PreparedStatement objects
-    // were destroyed along with the cache, so comparing their addresses would be reading freed
-    // memory. What matters is that the SAME sql text prepares again — if it had not, the cache
-    // would still be holding a MYSQL_STMT that belongs to the socket the server closed, and using
-    // it is a use-after-free inside the driver rather than an error anyone gets to see.
-    connection.Prepare(atlas::generated::kCharactersSelectByPkSql);
-    EXPECT_EQ(connection.PrepareCount(), prepared_before + 2U);
+    // 증거는 포인터 비교가 아니라 카운터
+    // 옛 객체는 캐시와 함께 파괴되어 주소 비교는 해제된 메모리 읽기
+    // 같은 sql 이 다시 준비되지 않으면 캐시는 죽은 MYSQL_STMT 를 쥔 채로 남는다
+    // 그 상태의 드라이버 접근은 use-after-free
+    connection.Prepare( atlas::generated::kCharactersSelectByPkSql );
+    EXPECT_EQ( connection.PrepareCount(), prepared_before + 2U );
 }
 
-TEST_F(DbRuntimeTest, ReconnectCannotInventADatabaseThatIsNotThere) {
-    // Same entry point the reconnect takes (Connection::Open), pointed at an endpoint with nothing
-    // behind it. When it fails, EnsureAlive returns false and the pool reports its existing
-    // unavailable answer — there is no path here that yields rows or a silent success.
-    //
-    // 🔴 The end-to-end version of this — the database itself going away under a running server —
-    // is `docker compose restart mysql`, which a test may not do to the container the rest of the
-    // suite is using. It is verified by hand and written down in architecture-design.md §10.
+TEST_F( DbRuntimeTest, ReconnectCannotInventADatabaseThatIsNotThere )
+{
+    // 재접속과 같은 진입점(Connection::Open)을 아무것도 없는 엔드포인트로 겨눔
+    // 실패하면 EnsureAlive 는 false, 풀은 기존 unavailable 응답. 조용한 성공 없음
+    // [AD 10] 종단 버전(docker compose restart mysql)은 공유 컨테이너라 손으로 검증
     DbConnectionConfig unreachable = config_;
-    unreachable.port = UInt16{1};
+    unreachable.port = UInt16{ 1 };
 
-    EXPECT_THROW(static_cast<void>(std::make_unique<atlas::Connection>(unreachable)),
-                 atlas::DbException);
-    EXPECT_THROW(static_cast<void>(std::make_unique<atlas::ConnectionPool>(unreachable, 1)),
-                 atlas::DbException);
+    EXPECT_THROW( static_cast< void >( std::make_unique< atlas::Connection >( unreachable ) ),
+                  atlas::DbException );
+    EXPECT_THROW(
+        static_cast< void >( std::make_unique< atlas::ConnectionPool >( unreachable, 1 ) ),
+        atlas::DbException );
 }
 
-TEST_F(DbRuntimeTest, CtxCrossesIntoTheDbThreadByValue) {
-    atlas::ConnectionPool pool(config_, 2);
-    atlas::DbRunner runner(pool, 2, atlas::Seconds{2});
+TEST_F( DbRuntimeTest, CtxCrossesIntoTheDbThreadByValue )
+{
+    atlas::ConnectionPool pool( config_, 2 );
+    atlas::DbRunner runner( pool, 2, atlas::Seconds{ 2 } );
     runner.Start();
 
     Ctx ctx;
     ctx.trace_id = 987654321;
-    ctx.character_id = CharacterId{55};
+    ctx.character_id = CharacterId{ 55 };
 
-    std::atomic<UInt64> observed_trace{0};
-    std::atomic<UInt64> observed_character{0};
-    std::atomic<bool> had_connection{false};
-    std::atomic<bool> done{false};
+    std::atomic< UInt64 > observed_trace{ 0 };
+    std::atomic< UInt64 > observed_character{ 0 };
+    std::atomic< bool > had_connection{ false };
+    std::atomic< bool > done{ false };
 
     const atlas::SubmitResult submitted = runner.Submit(
         ctx,
-        [&](Ctx& job_ctx, atlas::Connection* connection) {
-            // Read from the INSTALLED ledger, not from job_ctx: proving the value crossed is only
-            // interesting if the thing the log macros read on this thread is the one that crossed.
-            observed_trace.store(atlas::CurrentCtx().trace_id);
-            observed_character.store(atlas::IdValue(atlas::CurrentCtx().character_id));
-            had_connection.store(connection != nullptr);
+        [&]( Ctx& job_ctx, atlas::Connection* connection )
+        {
+            // job_ctx 가 아니라 설치된 원장에서 읽는다
+            // 이 스레드의 로그 매크로가 읽는 그것이 건너왔는지가 관심사
+            observed_trace.store( atlas::CurrentCtx().trace_id );
+            observed_character.store( atlas::IdValue( atlas::CurrentCtx().character_id ) );
+            had_connection.store( connection != nullptr );
             job_ctx.tx_state = TxState::Committed;
         },
-        [&](const Ctx& done_ctx) {
-            // The ledger the job left behind, carried through to the completion.
-            EXPECT_EQ(done_ctx.tx_state, TxState::Committed);
-            done.store(true);
-        });
-    ASSERT_EQ(submitted, atlas::SubmitResult::Accepted);
+        [&]( const Ctx& done_ctx )
+        {
+            // 잡이 남긴 원장이 완료 콜백까지 실려 옴
+            EXPECT_EQ( done_ctx.tx_state, TxState::Committed );
+            done.store( true );
+        } );
+    ASSERT_EQ( submitted, atlas::SubmitResult::Accepted );
 
-    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{5};
-    while (!done.load() && atlas::Clock::now() < deadline) {
+    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{ 5 };
+    while ( !done.load() && atlas::Clock::now() < deadline )
+    {
         std::this_thread::yield();
     }
     runner.Stop();
 
-    EXPECT_TRUE(done.load());
-    EXPECT_TRUE(had_connection.load());
-    EXPECT_EQ(observed_trace.load(), 987654321U);
-    EXPECT_EQ(observed_character.load(), 55U);
-    // The caller's own ledger is untouched: the job mutated a copy.
-    EXPECT_EQ(ctx.tx_state, TxState::None);
+    EXPECT_TRUE( done.load() );
+    EXPECT_TRUE( had_connection.load() );
+    EXPECT_EQ( observed_trace.load(), 987654321U );
+    EXPECT_EQ( observed_character.load(), 55U );
+    // 호출자의 원장은 그대로. 잡은 사본을 바꿈
+    EXPECT_EQ( ctx.tx_state, TxState::None );
 }
 
-TEST_F(DbRuntimeTest, CompletionRunsBackOnTheOriginatingStrand) {
-    atlas::IoRunner io_runner(1);
+TEST_F( DbRuntimeTest, CompletionRunsBackOnTheOriginatingStrand )
+{
+    atlas::IoRunner io_runner( 1 );
     io_runner.Start();
-    atlas::Strand strand = atlas::asio::make_strand(io_runner.Context());
+    atlas::Strand strand = atlas::asio::make_strand( io_runner.Context() );
 
-    atlas::ConnectionPool pool(config_, 1);
-    atlas::DbRunner runner(pool, 1, atlas::Seconds{2});
+    atlas::ConnectionPool pool( config_, 1 );
+    atlas::DbRunner runner( pool, 1, atlas::Seconds{ 2 } );
     runner.Start();
 
-    std::atomic<bool> job_off_strand{false};
-    std::atomic<bool> completion_on_strand{false};
-    std::atomic<bool> done{false};
+    std::atomic< bool > job_off_strand{ false };
+    std::atomic< bool > completion_on_strand{ false };
+    std::atomic< bool > done{ false };
 
     Ctx ctx;
     ctx.trace_id = 24680;
 
     const atlas::SubmitResult submitted = runner.Submit(
         ctx,
-        [&](Ctx&, atlas::Connection* connection) {
-            // 🔴 The blocking half must NOT be on the strand — that is the whole point of the
-            // separate pool (§9).
-            job_off_strand.store(!strand.running_in_this_thread());
-            ASSERT_NE(connection, nullptr);
-            const std::array<DbValue, 1> parameters{DbValue{kTestServerId}};
-            connection->Prepare(kDeleteAllForServerSql).Execute(parameters);
+        [&]( Ctx&, atlas::Connection* connection )
+        {
+            // [AD 9] 블로킹 절반은 strand 위에 있으면 안 됨. 별도 풀의 존재 이유
+            job_off_strand.store( !strand.running_in_this_thread() );
+            ASSERT_NE( connection, nullptr );
+            const std::array< DbValue, 1 > parameters{ DbValue{ kTestServerId } };
+            connection->Prepare( kDeleteAllForServerSql ).Execute( parameters );
         },
-        [&](const Ctx&) {
-            completion_on_strand.store(strand.running_in_this_thread());
-            done.store(true);
+        [&]( const Ctx& )
+        {
+            completion_on_strand.store( strand.running_in_this_thread() );
+            done.store( true );
         },
-        [strand](std::function<void()> completion) {
-            atlas::asio::post(strand, std::move(completion));
-        });
-    ASSERT_EQ(submitted, atlas::SubmitResult::Accepted);
+        [strand]( std::function< void() > completion )
+        { atlas::asio::post( strand, std::move( completion ) ); } );
+    ASSERT_EQ( submitted, atlas::SubmitResult::Accepted );
 
-    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{5};
-    while (!done.load() && atlas::Clock::now() < deadline) {
+    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{ 5 };
+    while ( !done.load() && atlas::Clock::now() < deadline )
+    {
         std::this_thread::yield();
     }
     runner.Stop();
     io_runner.Stop();
 
-    EXPECT_TRUE(done.load());
-    EXPECT_TRUE(job_off_strand.load());
-    EXPECT_TRUE(completion_on_strand.load());
+    EXPECT_TRUE( done.load() );
+    EXPECT_TRUE( job_off_strand.load() );
+    EXPECT_TRUE( completion_on_strand.load() );
 }
 
-// 🔴 The regression line for load shedding (architecture-design.md §10.8). Without a cap the queue
-// grows without bound, and the server keeps committing requests whose clients gave up long ago.
-TEST_F(DbRuntimeTest, QueueRefusesPastItsCapAndStopsGrowingThere) {
-    atlas::ConnectionPool pool(config_, 1);
-    atlas::DbRunner runner(pool, 1, atlas::Seconds{2});
+// [AD 10.8] 로드 셰딩 회귀 방지선
+// 상한이 없으면 큐가 무한히 자란다
+// 서버는 클라이언트가 이미 포기한 요청을 계속 커밋한다
+TEST_F( DbRuntimeTest, QueueRefusesPastItsCapAndStopsGrowingThere )
+{
+    atlas::ConnectionPool pool( config_, 1 );
+    atlas::DbRunner runner( pool, 1, atlas::Seconds{ 2 } );
     const std::size_t capacity = runner.QueueCapacity();
-    ASSERT_EQ(capacity, atlas::DbRunner::kMaxQueuedJobsPerThread);
+    ASSERT_EQ( capacity, atlas::DbRunner::kMaxQueuedJobsPerThread );
     runner.Start();
 
-    // Every job parks until the test releases it, so the queue drains only on command.
-    std::atomic<bool> release{false};
-    std::atomic<std::size_t> ran{0};
-    std::atomic<std::size_t> completed{0};
+    // 모든 잡이 해제될 때까지 멈춰 서서, 큐는 명령할 때만 빠짐
+    std::atomic< bool > release{ false };
+    std::atomic< std::size_t > ran{ 0 };
+    std::atomic< std::size_t > completed{ 0 };
     std::size_t accepted = 0;
     std::size_t rejected = 0;
 
-    for (std::size_t index = 0; index < capacity + 8; ++index) {
+    for ( std::size_t index = 0; index < capacity + 8; ++index )
+    {
         const atlas::SubmitResult result = runner.Submit(
             Ctx{},
-            [&](Ctx&, atlas::Connection*) {
-                ran.fetch_add(1);
-                while (!release.load()) {
+            [&]( Ctx&, atlas::Connection* )
+            {
+                ran.fetch_add( 1 );
+                while ( !release.load() )
+                {
                     std::this_thread::yield();
                 }
             },
-            [&](const Ctx&) { completed.fetch_add(1); });
-        if (result == atlas::SubmitResult::Accepted) {
+            [&]( const Ctx& ) { completed.fetch_add( 1 ); } );
+        if ( result == atlas::SubmitResult::Accepted )
+        {
             ++accepted;
-        } else {
-            EXPECT_EQ(result, atlas::SubmitResult::Rejected);
+        }
+        else
+        {
+            EXPECT_EQ( result, atlas::SubmitResult::Rejected );
             ++rejected;
         }
-        // 🔴 The property, checked after EVERY submit rather than once at the end: the queue never
-        // grows past the cap. A cap that is only true at the end is a cap that leaked.
-        EXPECT_LE(runner.PendingCount(), capacity);
+        // 매 submit 뒤마다 검사. 끝에서만 참인 상한은 이미 샌 상한
+        EXPECT_LE( runner.PendingCount(), capacity );
     }
 
-    // The single worker is parked inside the first job, so the queue holds the rest.
-    EXPECT_GE(accepted, capacity);
-    EXPECT_GT(rejected, 0U);
-    EXPECT_EQ(accepted + rejected, capacity + 8);
-    EXPECT_EQ(runner.RejectedCount(), static_cast<UInt64>(rejected));
+    // 워커 1개가 첫 잡 안에 멈춰 있어 나머지는 큐가 들고 있음
+    EXPECT_GE( accepted, capacity );
+    EXPECT_GT( rejected, 0U );
+    EXPECT_EQ( accepted + rejected, capacity + 8 );
+    EXPECT_EQ( runner.RejectedCount(), static_cast< UInt64 >( rejected ) );
 
-    release.store(true);
-    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{20};
-    while (completed.load() < accepted && atlas::Clock::now() < deadline) {
+    release.store( true );
+    const atlas::TimePoint deadline = atlas::Clock::now() + atlas::Seconds{ 20 };
+    while ( completed.load() < accepted && atlas::Clock::now() < deadline )
+    {
         std::this_thread::yield();
     }
     runner.Stop();
 
-    // 🔴 A refused job runs NOTHING — not the work, not the completion. The alternative (a
-    // completion invoked with a failure) was rejected because it would hand the caller two ways to
-    // learn the same thing; what must never happen is the third option, disappearing in silence,
-    // and that is what these two equalities pin down.
-    EXPECT_EQ(ran.load(), accepted);
-    EXPECT_EQ(completed.load(), accepted);
+    // 거부된 잡은 작업도 완료 콜백도 돌리지 않는다
+    // 셋째 선택지인 조용한 소멸을 이 두 등식이 못 박는다
+    EXPECT_EQ( ran.load(), accepted );
+    EXPECT_EQ( completed.load(), accepted );
 }
 
-// 🔴 The regression line for the ban on overloading one return value with two meanings: `false`
-// used to mean "stopped", and folding "overloaded" into it would leave the caller unable to tell a
-// shutdown from a busy server (§10.6 is where the same overlap was taken apart before).
-TEST_F(DbRuntimeTest, ARefusedSubmitIsDistinctFromAStoppedOne) {
-    atlas::ConnectionPool pool(config_, 1);
-    atlas::DbRunner runner(pool, 1, atlas::Seconds{2});
+// 반환값 하나에 두 뜻을 얹는 것을 막는 회귀 방지선
+// false 는 "멈춤" 하나였다
+// 여기에 "과부하" 를 접으면 호출자가 종료와 바쁨을 구분할 수 없다
+TEST_F( DbRuntimeTest, ARefusedSubmitIsDistinctFromAStoppedOne )
+{
+    atlas::ConnectionPool pool( config_, 1 );
+    atlas::DbRunner runner( pool, 1, atlas::Seconds{ 2 } );
 
-    // Never started.
-    EXPECT_EQ(runner.Submit(Ctx{}, [](Ctx&, atlas::Connection*) {}), atlas::SubmitResult::Stopped);
-    EXPECT_EQ(runner.RejectedCount(), 0U);
+    // 시작한 적 없음
+    EXPECT_EQ( runner.Submit( Ctx{}, []( Ctx&, atlas::Connection* ) {} ),
+               atlas::SubmitResult::Stopped );
+    EXPECT_EQ( runner.RejectedCount(), 0U );
 
     runner.Start();
-    std::atomic<bool> release{false};
+    std::atomic< bool > release{ false };
     std::size_t rejected = 0;
-    for (std::size_t index = 0; index < runner.QueueCapacity() + 8; ++index) {
-        const atlas::SubmitResult result = runner.Submit(Ctx{}, [&](Ctx&, atlas::Connection*) {
-            while (!release.load()) {
-                std::this_thread::yield();
-            }
-        });
-        if (result == atlas::SubmitResult::Rejected) {
+    for ( std::size_t index = 0; index < runner.QueueCapacity() + 8; ++index )
+    {
+        const atlas::SubmitResult result = runner.Submit( Ctx{},
+                                                          [&]( Ctx&, atlas::Connection* )
+                                                          {
+                                                              while ( !release.load() )
+                                                              {
+                                                                  std::this_thread::yield();
+                                                              }
+                                                          } );
+        if ( result == atlas::SubmitResult::Rejected )
+        {
             ++rejected;
         }
     }
-    EXPECT_GT(rejected, 0U);
-    EXPECT_EQ(runner.RejectedCount(), static_cast<UInt64>(rejected));
+    EXPECT_GT( rejected, 0U );
+    EXPECT_EQ( runner.RejectedCount(), static_cast< UInt64 >( rejected ) );
 
-    release.store(true);
+    release.store( true );
     runner.Stop();
 
-    // Stopped after a drain, and the rejection count did not move: the two answers stay separate.
-    EXPECT_EQ(runner.Submit(Ctx{}, [](Ctx&, atlas::Connection*) {}), atlas::SubmitResult::Stopped);
-    EXPECT_EQ(runner.RejectedCount(), static_cast<UInt64>(rejected));
+    // 드레인 뒤 정지이고 거부 카운트는 그대로. 두 답이 분리된 채로 남음
+    EXPECT_EQ( runner.Submit( Ctx{}, []( Ctx&, atlas::Connection* ) {} ),
+               atlas::SubmitResult::Stopped );
+    EXPECT_EQ( runner.RejectedCount(), static_cast< UInt64 >( rejected ) );
 }
 
 }  // namespace

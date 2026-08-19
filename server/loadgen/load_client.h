@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// 부하 하네스의 옵션/결과 계약. 실행 자체는 load_client.cpp
+// 좋은 수치가 무엇인지 판정하지 않고 일어난 일만 보고
+// =============================================================================
+
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -6,149 +12,129 @@
 
 #include "atlas/core/types.h"
 
-// The load harness (architecture-design.md §16 — the row that says the tick/bandwidth targets are
-// worked backwards from a first load measurement, and §9 for the model this reuses).
-//
-// 🔴 ONE CONNECTION IS NOT ONE THREAD. A thread-per-connection client stops measuring the server
-// and starts measuring its own scheduler: past a few hundred threads the context switches dominate
-// and every number after that describes the client. This harness uses the SAME model the server
-// does (§9) — one io_context, a fixed worker pool, one strand per connection — so the client scales
-// the way the server does and the limit that shows up is the server's.
-//
-// 🔴 It reuses the frame layer (atlas/proto) and the demo game's opcode table (game/handlers.h)
-// instead of re-encoding the wire. A second framing implementation would carry its own bugs, and
-// then a run would be a debugging session rather than a measurement.
-//
-// 🔴 It does not decide what a "good" number is. It reports what happened — including the failures
-// — and the interpretation lives in the design document next to the conditions it was measured
-// under. A harness that hid dropped connections would make every other figure unreadable.
+// [AD 9] 연결 1개 = 스레드 1개가 아니다
+// 스레드-퍼-커넥션은 자기 스케줄러를 측정하게 된다
+// 서버와 같은 모델을 써야 드러난 한계가 서버의 한계다
+// [AD 16.1a] 프레임 계층과 오프코드 표를 재사용한다
+// 두 번째 프레이밍 구현은 자기 버그를 달고 와 측정을 디버깅으로 바꾼다
 
-namespace atlas_loadgen {
+namespace atlas_loadgen
+{
 
-struct LoadOptions {
-    // A literal IPv4/IPv6 address, not a hostname: name resolution in the middle of a load run is
-    // one more thing that can stall and it would land inside the latency samples.
-    std::string host{"127.0.0.1"};
-    atlas::UInt16 port{7777};
+struct LoadOptions
+{
+    // 호스트명이 아니라 리터럴 주소
+    // 실행 도중 이름 해석이 멈추면 그 지연이 그대로 표본에 섞인다
+    std::string host{ "127.0.0.1" };
+    atlas::UInt16 port{ 7777 };
 
-    std::size_t connections{1};
+    std::size_t connections{ 1 };
 
-    // Target aggregate requests per second across every connection. 🔴 0 means CLOSED LOOP — the
-    // next request leaves as soon as the previous reply lands. That is the mode that finds a
-    // saturation point, because an open loop at a rate the server cannot serve just grows a queue
-    // in the client and reports the client's backlog as latency.
-    atlas::UInt32 rate_per_second{0};
+    // 합산 목표 rps. 0 = closed loop
+    // 포화점은 closed loop 로만 찾는다
+    // 서버가 못 받는 속도의 open loop 는 클라이언트 적체를 지연으로 보고한다
+    atlas::UInt32 rate_per_second{ 0 };
 
-    // Whole run, warm-up included.
-    atlas::UInt32 duration_seconds{20};
-    // Discarded prefix. Connection set-up, the first character load and the driver's first
-    // prepared-statement round trip all land here and none of them are steady state.
-    atlas::UInt32 warmup_seconds{3};
+    // 워밍업 포함 전체 실행 시간
+    atlas::UInt32 duration_seconds{ 20 };
+    // 버리는 앞부분
+    // 연결 수립, 첫 캐릭터 로드, 드라이버의 첫 prepare 왕복이 여기 들어간다
+    // 어느 것도 정상 상태가 아니다
+    atlas::UInt32 warmup_seconds{ 3 };
 
-    std::size_t io_threads{4};
+    std::size_t io_threads{ 4 };
 
-    // The seeded character block. Connection i drives character `first_character_id + i`, so no two
-    // connections contend on the per-character lock (§10.5) — that lock is a real serialiser and
-    // pointing every connection at one character would measure it instead of the server.
-    atlas::UInt64 first_character_id{900000};
-    atlas::UInt16 server_id{1};
+    // [AD 10.5] 연결 i 는 first_character_id + i 를 구동한다
+    // 그래야 캐릭터별 락에서 경합하지 않는다
+    // 한 캐릭터에 몰면 서버가 아니라 그 직렬화 지점을 측정하게 된다
+    atlas::UInt64 first_character_id{ 900000 };
+    atlas::UInt16 server_id{ 1 };
 
-    // `TCP_NODELAY` on the HARNESS's sockets (§16.1i). 🔴 Absent = the option is not touched at
-    // all, which is what every §16.1 run did and is why the default is an empty optional rather
-    // than `false`.
-    //
-    // 🔴 THIS IS THE CLIENT'S SOCKET, NOT THE SERVER'S. §9.3-(3) sets `no_delay(true)` on every
-    // accepted socket from a literal in `atlas/net/acceptor.cpp`, and there is no runtime key for
-    // it — contrasting THAT side means rebuilding the image, which is a change to the core rather
-    // than to this harness. What this flag contrasts is the same option, the same mechanism and the
-    // same loopback path, on the request half of the round trip.
-    std::optional<bool> no_delay;
+    // [AD 16.1i] 하네스 쪽 소켓의 TCP_NODELAY. 값 없음 = 손대지 않음
+    // 기존 측정이 그러했으므로 기본값은 false 가 아닌 빈 optional
+    // [AD 9.3] 서버 소켓이 아니다. 서버는 리터럴로 no_delay(true) 를 건다
+    // 런타임 키가 없어 그쪽 대조는 코어 변경이 된다
+    // 여기서는 요청 절반만 대조한다
+    std::optional< bool > no_delay;
 
-    // The ramp-up axis (§16.1i). Each entry is a STAGE's connection count, in order, and every
-    // stage runs for `stage_seconds`. Connections join at stage boundaries and never leave, so the
-    // list has to be strictly increasing.
-    //
-    // 🔴 EMPTY IS THE DEFAULT AND IT IS THE FIXED-CONCURRENCY MODE EVERY §16.1 TABLE WAS MEASURED
-    // WITH. Ramp-up is an added mode, not a replacement: the moment the default changes, the path
-    // back to the numbers already in the document is gone and none of them can be re-run.
-    std::vector<std::size_t> ramp_stages;
-    atlas::UInt32 stage_seconds{0};
+    // [AD 16.1i] 램프업 축. 항목은 단계별 연결 수
+    // 연결은 경계에서 합류만 하고 빠지지 않으므로 목록은 순증가여야 한다
+    // 비어 있는 것이 기본이다
+    // 그 기본이 기존 표를 측정한 고정 동시성 모드다
+    // 기본이 바뀌면 문서의 수치로 돌아갈 경로가 사라진다
+    std::vector< std::size_t > ramp_stages;
+    atlas::UInt32 stage_seconds{ 0 };
 
-    // The visualisation axis (§16.1a · loadgen/live_view.h). 🔴 BOTH DEFAULT TO OFF AND THAT IS
-    // LOAD BEARING: with neither set the harness allocates no metrics sink, starts no sampler
-    // thread and prints exactly what it printed for the §16.1 tables, so a run taken today is
-    // comparable with the numbers already in the document.
-    bool tui{false};
+    // [AD 16.1a] 관측 축. 둘 다 기본 off
+    // 그래야 메트릭 싱크도 샘플러 스레드도 없는 실행이 그대로 재현된다
+    // 기존 표와 비교 가능한 것은 그 실행뿐이다
+    bool tui{ false };
     std::string sample_jsonl_path;
-    // Path to a file an external probe loop keeps current, in milliseconds. The harness reads it,
-    // never measures it — live_view.h says why.
+    // 외부 프로브 루프가 갱신하는 파일 경로(ms). 읽기만 하고 재지 않음
     std::string probe_file_path;
 };
 
-// One stage's steady window. 🔴 A fixed-concurrency run is ONE stage, so this is not a second way
-// of reporting — it is the same aggregation with the stage list length set to 1.
-struct StageStats {
-    std::size_t connections{0};
-    atlas::UInt32 window_ms{0};
-    std::size_t responses_ok{0};
-    // 🔴 REJECTED, NOT FAILED. `kEquipResponseUnavailable` past the DB queue cap (§10.8) says the
-    // server declined the work and kept the connection; the client's next request is served
-    // normally. Adding this to the failure count would turn "the server refused" into "the server
-    // broke", and those are opposite conclusions about the same run.
-    std::size_t responses_rejected{0};
-    std::size_t responses_refused{0};
-    std::vector<atlas::UInt32> latencies_us;
-    // 🔴 THE ACCEPTED WORK ONLY, and the table is unreadable without it. A rejection comes back in
-    // microseconds because nothing ran, so once most answers are rejections the mixed p50 COLLAPSES
-    // — and a reader would take that for "the server got faster under overload". The question the
-    // ramp is asked is what happens to the requests the server did serve.
-    std::vector<atlas::UInt32> ok_latencies_us;
+// 단계 1개의 정상 상태 구간
+// 고정 동시성 실행은 단계가 1개일 뿐 보고 방식이 둘인 것이 아니다
+struct StageStats
+{
+    std::size_t connections{ 0 };
+    atlas::UInt32 window_ms{ 0 };
+    std::size_t responses_ok{ 0 };
+    // [AD 10.8] 실패가 아니라 거부
+    // 연결은 유지되고 다음 요청은 정상 처리된다
+    // 실패에 더하면 "거절했다" 가 "망가졌다" 로 뒤바뀐다
+    std::size_t responses_rejected{ 0 };
+    std::size_t responses_refused{ 0 };
+    std::vector< atlas::UInt32 > latencies_us;
+    // 수락된 작업만 담는다
+    // 거부는 us 단위로 돌아와, 다수가 되면 섞인 p50 을 무너뜨린다
+    // 그 결과는 "과부하에서 빨라졌다" 로 읽힌다
+    // 램프가 묻는 것은 처리된 요청 쪽이다
+    std::vector< atlas::UInt32 > ok_latencies_us;
 };
 
-struct LoadStats {
-    std::size_t connections_attempted{0};
-    std::size_t connections_established{0};
-    std::size_t connect_failures{0};
-    // Established, then lost before the run ended: a reset, a framing error, or a close from the
-    // far side. Counted apart from connect failures because they mean different things.
-    std::size_t transport_failures{0};
-    std::size_t load_failures{0};
-    std::size_t peak_live_connections{0};
+struct LoadStats
+{
+    std::size_t connections_attempted{ 0 };
+    std::size_t connections_established{ 0 };
+    std::size_t connect_failures{ 0 };
+    // 수립 후 실행 종료 전에 끊긴 것 - reset, 프레이밍 에러, 상대 종료.
+    // connect 실패와 뜻이 달라 따로 셈
+    std::size_t transport_failures{ 0 };
+    std::size_t load_failures{ 0 };
+    std::size_t peak_live_connections{ 0 };
 
-    std::size_t requests_sent{0};
-    std::size_t responses_ok{0};
-    // The server ran the job without a connection: the pool was exhausted within its acquire
-    // timeout (§10.3). 🔴 This is the hard pool-saturation signal and it is counted separately from
-    // every other refusal.
-    std::size_t responses_unavailable{0};
-    std::size_t responses_refused{0};
-    // A character load the server declined the same way (`LoadResult::Unavailable`). 🔴 Counted and
-    // RETRIED, never fatal: past the queue cap a joining connection can be turned away on its first
-    // request, and treating that as a lost connection would delete concurrency from the ramp
-    // exactly at the load level the ramp exists to describe.
-    std::size_t loads_rejected{0};
-    // Connections whose `--no-delay` request the OS refused. 🔴 Reported, because a non-zero here
-    // means the cell measured something other than its own label.
-    std::size_t no_delay_failures{0};
+    std::size_t requests_sent{ 0 };
+    std::size_t responses_ok{ 0 };
+    // [AD 10.3] 획득 타임아웃 안에 풀이 연결을 못 내준 경우.
+    // 풀 포화의 강한 신호라 다른 거절과 따로 셈
+    std::size_t responses_unavailable{ 0 };
+    std::size_t responses_refused{ 0 };
+    // 같은 방식으로 거절된 캐릭터 로드. 세되 재시도하고 치명으로 보지 않는다
+    // 유실로 처리하면 램프가 설명하려는 부하 구간에서 동시성이 사라진다
+    std::size_t loads_rejected{ 0 };
+    // OS 가 --no-delay 요청을 거절한 연결 수
+    // 0 이 아니면 그 셀은 자기 라벨과 다른 것을 측정한 것이라 반드시 보고한다
+    std::size_t no_delay_failures{ 0 };
 
-    // Steady-state equip round trips, microseconds, unsorted. In a ramp-up run this is the union of
-    // the stages' windows and 🔴 the throughput derived from it is an average across stages, not a
-    // capacity — `stages` below is what carries the answer.
-    std::vector<atlas::UInt32> latencies_us;
-    atlas::UInt32 steady_window_ms{0};
-    std::vector<StageStats> stages;
-    // The watchdog had to stop the io_context because a connection never came back. Any run with
-    // this set is reported as suspect rather than quietly trimmed.
-    bool watchdog_fired{false};
+    // 정상 상태 equip 왕복, us, 정렬 안 됨
+    // 램프업이면 단계 구간의 합집합이다
+    // 여기서 나온 처리량은 용량이 아니라 단계 평균이다
+    // 답은 아래 stages 가 싣는다
+    std::vector< atlas::UInt32 > latencies_us;
+    atlas::UInt32 steady_window_ms{ 0 };
+    std::vector< StageStats > stages;
+    // 돌아오지 않은 연결 때문에 워치독이 io_context 를 멈춘 경우.
+    // 조용히 잘라내지 않고 의심 실행으로 보고
+    bool watchdog_fired{ false };
 };
 
-// Runs the whole sweep point and returns once every connection has finished or been stopped.
-[[nodiscard]] LoadStats RunLoad(const LoadOptions& options);
+[[nodiscard]] LoadStats RunLoad( const LoadOptions& options );
 
-// Nearest-rank percentile over an ASCENDING-sorted sample vector. 0 for an empty vector.
-// 🔴 `fraction` is 0.50 / 0.99, not 50 / 99 — the two conventions get mixed up exactly once per
-// project and the result is a p99 that is really a p50.
-[[nodiscard]] atlas::UInt32 Percentile(const std::vector<atlas::UInt32>& sorted_samples,
-                                       atlas::Float64 fraction);
+// 오름차순 정렬 표본의 nearest-rank 백분위. 빈 벡터면 0.
+// fraction 은 50/99 가 아니라 0.50/0.99 - 섞이면 p50 인 p99 가 나옴
+[[nodiscard]] atlas::UInt32 Percentile( const std::vector< atlas::UInt32 >& sorted_samples,
+                                        atlas::Float64 fraction );
 
 }  // namespace atlas_loadgen

@@ -1,10 +1,8 @@
-// The one translation unit that compiles boost-redis itself.
-//
-// 🔴 boost-redis ships as headers plus a single implementation aggregate, and vcpkg installs it as
-// an INTERFACE target with no library to link. Without this file the build compiles cleanly and
-// then fails at LINK time with nine unresolved symbols, which points nowhere near the cause.
-//
-// 🔴 It is kept out of the unity batch (see CMakeLists.txt): the library's own sources are not this
-// project's sources, and merging them into a batch with atlas code would put an external
-// implementation inside the same translation unit as ours for no benefit.
+// =============================================================================
+// boost-redis 본체를 컴파일하는 단 하나의 번역 단위
+// 없으면 컴파일은 통과하고 링크에서 미해결 심볼 9개로 원인과 먼 곳에서 터짐
+// =============================================================================
+
+// vcpkg 가 라이브러리 없는 INTERFACE 타깃으로 설치하는 탓
+// unity 배치에서는 제외(CMakeLists) - 외부 구현을 넣을 이득이 없음
 #include <boost/redis/src.hpp>

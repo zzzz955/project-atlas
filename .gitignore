@@ -36,7 +36,7 @@ node_modules/
 tools/logs/
 tools/.gen-cache/
 
-# 🔴 server/db/migrations/*.sql is deliberately NOT ignored. Those files are the dev -> prod
+# server/db/migrations/*.sql is deliberately NOT ignored. Those files are the dev -> prod
 # handover medium (architecture-design.md §10.1): production applies them by hand, so the history
 # has to be in the repo. They carry DDL only - never connection settings.
 
@@ -46,7 +46,7 @@ logs/
 packet_dump/
 
 # Load-measurement artefacts (architecture-design.md §16.1a). One JSONL per run plus the HTML
-# tools/loadreport builds from it. 🔴 These grow with every measurement and none of them is a
+# tools/loadreport builds from it. These grow with every measurement and none of them is a
 # source: the numbers that matter are transcribed into §16.1 by hand, which is what makes that
 # table the SoT rather than whichever file happened to be lying in the tree.
 reports/

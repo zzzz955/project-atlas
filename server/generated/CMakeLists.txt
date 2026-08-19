@@ -1,5 +1,5 @@
 # Generator output root (architecture-design.md §14).
-# 🔴 Nothing under generated/ is ever hand-edited. Change the input (shared/datas/*.csv,
+# Nothing under generated/ is ever hand-edited. Change the input (shared/datas/*.csv,
 # shared/contracts/*.cs, server/db/schema.json) and re-run the generator — `npm run gen:all` from
 # the repo root.
 #

@@ -1,58 +1,53 @@
 #pragma once
+
+// =============================================================================
+// [AD 10.2] Redis 커맨드 진입점. atlas/db 의 DbRunner 와 같은 분할이며
+// 유일한 차이는 스레드 풀 대신 strand 라는 점
+// =============================================================================
+
 #include <functional>
 
 #include "atlas/core/ctx.h"
 #include "atlas/redis/connection.h"
 
-namespace atlas {
+namespace atlas
+{
 
-// architecture-design.md 10.2 - the command entry point, and the ledger's crossing (9.2).
-//
-// The split mirrors atlas/db exactly: RedisConnection owns the socket and the strand the way
-// ConnectionPool owns the handles, and this type is where a request's Ctx is carried across the
-// boundary and where the completion is handed back to whatever executor asked. Reading the two
-// layers side by side is the point - the same shape twice makes the ONE difference between them
-// (a thread pool for the blocking client, a strand for the asio-native one) visible instead of
-// buried.
-//
-// 🔴 The Ctx crosses BY VALUE. A reference would dangle the moment the caller's CtxScope unwound
-// on the I/O thread, which is the concrete trap 9.2 warns about; the guard re-installs the copy
-// wherever the work actually lands.
-class RedisRunner {
+// [AD 9.2] 원장 교차 지점. Ctx 는 값으로 건넨다
+// 참조면 호출자의 CtxScope 가 풀리는 순간 dangling 이 된다
+// guard 가 사본을 실제 실행 지점에 다시 설치한다
+class RedisRunner
+{
 public:
-    // Runs after the command, on whatever executor `poster` sends it to. May be empty when the
-    // caller genuinely does not care about the outcome - a cache write, for instance.
-    using Completion = std::function<void(const Ctx&, const RedisResult&)>;
+    // 커맨드 이후 poster 가 보낸 executor 위에서 실행
+    // 결과에 관심이 없으면 비어 있어도 됨 - 캐시 쓰기 같은 경우
+    using Completion = std::function< void( const Ctx&, const RedisResult& ) >;
 
-    // How to get back to the caller's executor - typically
-    // `[strand](std::function<void()> fn) { asio::post(strand, std::move(fn)); }`.
-    //
-    // 🔴 Type-erased rather than a template parameter, the same trade atlas/db takes: one indirect
-    // call at run time against a whole instantiation per executor at compile time (cpp-style.md 6).
-    // Empty means "run the completion where the reply landed", which is the connection's strand.
-    using CompletionPoster = std::function<void(std::function<void()>)>;
+    // 호출자 executor 로 돌아가는 길
+    // 비어 있으면 응답이 떨어진 곳(연결의 strand)에서 완료 실행
+    // [CS 6] 템플릿 인자 대신 type erasure
+    // executor 마다의 인스턴스화 대신 런타임 간접 호출 1회
+    using CompletionPoster = std::function< void( std::function< void() > ) >;
 
-    explicit RedisRunner(RedisConnection& connection) : connection_(&connection) {}
+    explicit RedisRunner( RedisConnection& connection ) : connection_( &connection ) {}
 
-    // Queues one command. 🔴 Unlike DbRunner::Submit there is no refusal to report: a stopped or
-    // unreachable server is delivered to the completion as `RedisResult::ok == false`, because
-    // every caller of this layer already has to handle that answer and a second failure channel
-    // would only invite one of them to be forgotten.
-    //
-    // 🔴 The command is a const reference, not a by-value sink. The driver copies the arguments
-    // into its own serialised payload the moment the request is built, so a by-value parameter here
-    // would only add a copy on the way in — and `std::move` into it would be the kind of move that
-    // does nothing, which reads like an optimisation and is not one.
-    void Submit(Ctx ctx, const RedisCommand& command, Completion completion = {},
-                CompletionPoster poster = {});
+    // 커맨드 1개 큐잉. DbRunner::Submit 과 달리 거부를 따로 보고하지 않는다
+    // 정지나 불통을 ok == false 로 전달한다
+    // 모든 호출자가 이미 처리해야 하는 답이라 두 번째 실패 경로는 잊히기만 함
 
-    // Forwards RedisConnection::IsConfigured. 🔴 Read that comment before using it: "no cache was
-    // configured" and "the cache did not answer" arrive as the same `ok == false` and only one of
-    // them is worth a warning.
+    // command 가 const 참조인 이유는 드라이버가 인자를 복사하기 때문
+    // 요청을 만들며 자기 직렬화 버퍼로 옮기므로 값 전달은 복사 1회를 더할 뿐
+    void Submit( Ctx ctx, const RedisCommand& command, Completion completion = {},
+                 CompletionPoster poster = {} );
+
+    // RedisConnection::IsConfigured 전달
+    // 캐시 미설정과 캐시 무응답이 같은 ok == false 로 온다
+    // 경고할 가치가 있는 것은 한쪽뿐
     [[nodiscard]] bool IsConfigured() const noexcept { return connection_->IsConfigured(); }
 
 private:
-    // Non-owning observer: the connection outlives the runner by construction (cpp-style.md 4.4).
+    // [CS 4.4] 비소유 관찰자
+    // 연결이 runner 보다 오래 사는 것은 구성상 보장된다
     RedisConnection* connection_;
 };
 

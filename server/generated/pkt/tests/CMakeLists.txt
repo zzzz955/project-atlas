@@ -1,4 +1,4 @@
-# Tests for the pkt_generator C++ target. 🔴 Hand-written, unlike everything one level up.
+# Tests for the pkt_generator C++ target. Hand-written, unlike everything one level up.
 # They live under generated/pkt/ (not server/tests/) so this work item owns a single directory
 # and cannot collide with the core test file.
 find_package(GTest CONFIG REQUIRED)
@@ -13,7 +13,7 @@ include(GoogleTest)
 gtest_discover_tests(atlas_generated_pkt_tests TEST_PREFIX pkt.)
 
 # ── The generator itself is under test too ───────────────────────────────────────────────────
-# 🔴 A contract carrying a floating point field must make pkt_generator die loudly
+# A contract carrying a floating point field must make pkt_generator die loudly
 # (architecture-design.md §8.4). If it silently emitted the field instead, the quantization rule
 # would only fail visibly under a load test, well after the contract shipped. The fixture lives
 # outside shared/contracts/ so a normal `npm run gen:pkt` never sees it.
@@ -34,7 +34,7 @@ if(ATLAS_NODE_EXECUTABLE)
     set_tests_properties(pkt.generator_rejects_fp_message PROPERTIES
         PASS_REGULAR_EXPRESSION "architecture-design.md 8\\.4")
 else()
-    # 🔴 Announced, never silent: a skipped gate that says nothing is a dead gate.
+    # Announced, never silent: a skipped gate that says nothing is a dead gate.
     message(WARNING
         "node not found - the pkt_generator floating-point rejection tests are NOT registered. "
         "node is required by this repository anyway (npm run gen:*), so this is a broken setup.")

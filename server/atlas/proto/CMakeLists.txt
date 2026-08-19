@@ -4,7 +4,7 @@
 # collapse that boundary.
 add_library(atlas_proto STATIC crc32.cpp frame.cpp frame_reader.cpp session_framing.cpp)
 
-# 🔴 Dependency direction: proto -> net, and never the reverse.
+# Dependency direction: proto -> net, and never the reverse.
 # Frames sit ABOVE the byte stream, so the upper layer is the one that names the lower. Linking the
 # other way (atlas_net -> atlas_proto) would let session.h reach for a FrameReader and would make
 # the byte boundary a comment instead of a compile-time fact. The cost of this direction is that
@@ -15,6 +15,6 @@ add_library(atlas_proto STATIC crc32.cpp frame.cpp frame_reader.cpp session_fram
 # net symbols too.
 target_link_libraries(atlas_proto PUBLIC atlas_net)
 
-# 🔴 No PCH here on purpose. atlas_net puts <boost/asio.hpp> behind a PRIVATE PCH because every one
+# No PCH here on purpose. atlas_net puts <boost/asio.hpp> behind a PRIVATE PCH because every one
 # of its sources needs it; here only session_framing.cpp does, and a target-wide PCH would make the
 # three parsing sources parse asio for nothing — the exact opposite of what §15.1 bought.

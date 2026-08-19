@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// 아이템 장착 1건을 원자적으로 처리
+// 슬롯당 1개 불변식을 DB 제약 없이 트랜잭션과 캐릭터별 락으로 지킴
+// =============================================================================
+
 #include <functional>
 #include <map>
 #include <memory>
@@ -12,104 +18,91 @@
 #include "atlas/db/connection.h"
 #include "game/inventory.h"
 
-namespace atlas_demo {
+namespace atlas_demo
+{
 
-// Why an equip request was refused. 🔴 Expected failures, so they are a return value and not an
-// exception (architecture-design.md §11.2a). What DOES throw here is the database refusing a
-// statement, and that unwinds `Transaction` and rolls the whole thing back — which is the property
-// the fault-injection test exists to observe.
-enum class EquipResult : atlas::UInt8 {
+// 장착 거부 사유
+// [AD 11.2a] 예상된 실패라 예외가 아니라 반환값
+// 여기서 throw 하는 것은 DB 가 문을 거부하는 경우
+// 그때 Transaction 이 풀리며 전부 롤백됨
+enum class EquipResult : atlas::UInt8
+{
     Ok = 0,
     InvalidSlot,
     ItemNotFound,
-    NotOwned,  // 🔴 §8.2 layer 3, server authority: the item exists, but not for this character
+    NotOwned,  // [AD 8.2] 서버 권위. 아이템은 있지만 이 캐릭터 것이 아님
     CharacterNotFound,
-    // 🔴 §8.2 layer 3 again, now against the STATIC data (generated/info/item_info.h). The row is
-    // real and it is yours; what the server rejects is the claim about what the item IS. Appended
-    // rather than inserted: this enumerator is the response byte on the wire (§8.5).
-    UnknownItem,   // no such item_id in shared/datas/item.csv
-    SlotMismatch,  // the item exists, but not for the slot the request names
+    // [AD 8.2] 이번엔 정적 데이터 대상. row 는 진짜고 내 것
+    // 그래도 "그 아이템이 무엇인가"라는 주장은 서버가 거부
+    // [AD 8.5] 와이어의 응답 바이트라 중간 삽입이 아니라 끝에 추가
+    UnknownItem,   // item.csv 에 정의가 없는 item_id
+    SlotMismatch,  // 아이템은 있지만 요청한 슬롯의 것이 아님
 };
 
-[[nodiscard]] std::string_view DescribeEquipResult(EquipResult result) noexcept;
+[[nodiscard]] std::string_view DescribeEquipResult( EquipResult result ) noexcept;
 
-// Equipping one item, atomically.
-//
-// 🔴 THIS IS THE DATABASE HIGHLIGHT OF THE SLICE, AND THE REASON IS THE MISSING CONSTRAINT.
-// "At most one item per equip slot" cannot be declared to MySQL: there is no partial unique index,
-// so a UNIQUE restricted to `equip_slot != 0` does not exist (server/db/schema.json says the same).
-// The invariant therefore has exactly two defenders — the transaction below, and the tests that try
-// to break it. A single-row UPDATE would have proven nothing: it is atomic without a transaction.
-// Three writes across two tables is what makes the rollback observable.
-//
-//     1. clear the slot          UPDATE character_items SET equip_slot = 0  (the current occupant)
-//     2. take the slot           UPDATE character_items SET equip_slot = N  (the target item)
-//     3. touch the character     UPDATE characters       SET last_login_at  (see the note in .cpp)
-//
-// 🔴 PER-CHARACTER SERIALISATION — WHY A LOCK AND NOT A STRAND.
-// Two concurrent equip requests for the SAME character interleave their read-then-write and both
-// can conclude the slot was free; the invariant then breaks with no error anywhere. The two
-// available answers were §10's per-character lock and pinning the character to a strand, and the
-// choice is forced by WHERE this code runs: the DB client is synchronous, so §9 puts it on the DB
-// thread pool, deliberately NOT on an io_context worker. A strand only serialises work executing on
-// its io_context — pinning a character to one would mean running the blocking query on an I/O
-// thread, which freezes every session that thread serves. That is the exact failure the separate
-// pool exists to prevent, so strand pinning is not available at this layer and the lock is.
-//
-// 🔴 This does not contradict §9.1's "concurrency is strands, single model". §9.1 permits a lock on
-// a genuinely shared resource, and a character's rows are shared by N unrelated DB threads — the
-// same line connection_pool.h sits on. The lock is taken and released entirely inside one call on
-// one DB thread; it never spans an async boundary, so no handler can ever be waiting on it.
-class EquipService {
+// =============================================================================
+// 원자적 장착
+// =============================================================================
+
+// 슬롯당 1개는 MySQL 에 선언 불가. 부분 유니크 인덱스가 없음
+// 방어선은 아래 트랜잭션과 그것을 깨보는 테스트 둘뿐
+// 단일 행 UPDATE 는 트랜잭션 없이도 원자적임
+// 두 테이블 세 번의 쓰기여야 롤백이 관측됨
+
+// [AD 9] 캐릭터별 직렬화에 strand 가 아니라 락
+// DB 클라이언트가 동기라 DB 스레드 풀에서 돎
+// strand 에 고정하면 블로킹 질의가 I/O 스레드를 멈춤
+// [AD 9.1] 락은 한 호출 안에서 잡고 놓아 async 경계를 넘지 않음
+class EquipService
+{
 public:
-    struct Request {
-        atlas::UInt16 server_id{0};
-        // 🔴 The SESSION's character, never a value out of the packet. Everything after the login
-        // derives its identity from the connection, which is the half of server authority (§8.2
-        // layer 3) that exists before auth (§12) lands.
+    struct Request
+    {
+        atlas::UInt16 server_id{ 0 };
+        // [AD 8.2] 패킷 값이 아니라 SESSION 의 캐릭터
+        // 로그인 이후 모든 것은 연결에서 신원을 파생
+        // 인증이 오기 전에 존재하는 서버 권위의 절반
         atlas::CharacterId character_id{};
-        atlas::UInt64 item_uid{0};
-        EquipSlot slot{EquipSlot::None};
+        atlas::UInt64 item_uid{ 0 };
+        EquipSlot slot{ EquipSlot::None };
     };
 
-    struct Outcome {
-        EquipResult result{EquipResult::Ok};
-        // The item that left the slot, or 0 when it was empty.
-        atlas::UInt64 unequipped_item_uid{0};
+    struct Outcome
+    {
+        EquipResult result{ EquipResult::Ok };
+        atlas::UInt64 unequipped_item_uid{ 0 };  // 슬롯에서 나간 아이템, 없으면 0
     };
 
-    // 🔴 A fault-injection seam, and it is in the production signature ON PURPOSE. The property
-    // this class exists to defend — "a failure at the third write leaves the invariant untouched" —
-    // is not observable from outside unless that write can be made to fail on demand. Reproducing
-    // it by other means (killing the connection, corrupting a row) would test the driver instead of
-    // this transaction. It is empty in production; the only caller that passes one is the test.
-    using FaultInjector = std::function<void()>;
+    // 결함 주입 이음매를 프로덕션 시그니처에 의도적으로 둠
+    // 그 쓰기를 원할 때 실패시킬 수 없으면 불변식 보존을 밖에서 관측 불가
+    // 프로덕션에서는 비어 있고 넘기는 것은 테스트뿐
+    using FaultInjector = std::function< void() >;
 
     EquipService() = default;
 
-    EquipService(const EquipService&) = delete;
-    EquipService& operator=(const EquipService&) = delete;
-    EquipService(EquipService&&) = delete;
-    EquipService& operator=(EquipService&&) = delete;
+    EquipService( const EquipService& ) = delete;
+    EquipService& operator=( const EquipService& ) = delete;
+    EquipService( EquipService&& ) = delete;
+    EquipService& operator=( EquipService&& ) = delete;
 
-    // Runs on a DB thread with a leased connection. `ctx` is the job's own ledger — the transaction
-    // scope writes tx_state into it so the caller can still ask "was one open?" after the guard
-    // returned (§10.3).
-    Outcome Equip(atlas::Ctx& ctx, atlas::Connection& connection, const Request& request,
-                  const FaultInjector& before_commit = {});
+    // DB 스레드에서 임대 커넥션으로 실행
+    // [AD 10.3] ctx 는 이 작업의 장부
+    // 트랜잭션 범위가 tx_state 를 여기 씀
+    // 가드가 끝난 뒤에도 호출자가 "열려 있었나"를 물을 수 있음
+    Outcome Equip( atlas::Ctx& ctx, atlas::Connection& connection, const Request& request,
+                   const FaultInjector& before_commit = {} );
 
 private:
-    using CharacterKey = std::pair<atlas::UInt16, atlas::UInt64>;
+    using CharacterKey = std::pair< atlas::UInt16, atlas::UInt64 >;
 
-    std::mutex& LockFor(const CharacterKey& key);
+    std::mutex& LockFor( const CharacterKey& key );
 
-    // 🔴 Entries are never removed. The map is bounded by the number of distinct characters this
-    // process has served, and erasing one would mean proving nobody is about to take it — the
-    // classic way a lock registry grows a use-after-free. A GAME server that outlives its memory
-    // budget here has a different problem: the durable answer §10.2 already names is a distributed
-    // lock, not a smaller map.
+    // 항목을 지우지 않음. 지우려면 아무도 곧 잡지 않는다는 증명이 필요함
+    // 그것이 락 레지스트리가 use-after-free 를 얻는 전형적 경로
+    // [AD 10.2] 메모리가 문제인 규모의 답은 작은 맵이 아니라 분산 락
     std::mutex registry_mutex_;
-    std::map<CharacterKey, std::unique_ptr<std::mutex>> character_locks_;
+    std::map< CharacterKey, std::unique_ptr< std::mutex > > character_locks_;
 };
 
 }  // namespace atlas_demo

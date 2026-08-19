@@ -1,29 +1,25 @@
 #pragma once
+
+// =============================================================================
+// CRC-32 (IEEE 802.3, reflected, 0xEDB88320). 프레이밍 무결성 전용
+// 검사 구간이 헤더 일부 + 페이로드의 가상 연결이라 스트리밍 형태
+// =============================================================================
+
 #include <span>
 
 #include "atlas/core/types.h"
 
-// architecture-design.md §8.1 / §8.2 — CRC-32 (IEEE 802.3, reflected, polynomial 0xEDB88320).
-//
-// 🔴 THIS IS NOT TAMPER PROTECTION. §8.2 layer 1 and nothing above it. The algorithm is public, so
-// an adversary who rewrites a payload simply recomputes the checksum and the frame verifies; TCP
-// has already checksummed the same bytes on the way in. What this buys is *framing* integrity —
-// proof that the length prefix this reader trusted actually delimits the frame that was sent, so a
-// desynchronised stream is caught at the first frame instead of being reinterpreted forever after.
-// Tampering is stopped by the session-key HMAC (§8.2 layer 2, not built) and the last line is
-// server authority (§8.2 layer 3). 🔴 "The checksum detects tampering" is false; do not write it.
-//
-// The streaming form exists because the checksummed region is a virtual concatenation — the opcode
-// and sequence fields out of the header, then the payload — and materialising that into one buffer
-// just to hash it would copy every payload an extra time.
+namespace atlas
+{
 
-namespace atlas {
+inline constexpr UInt32 kCrc32Init = 0xFFFFFFFFU;  // 끝에 Crc32Finish 1회
 
-// Initial register value. Fold the data in with Crc32Update, then Crc32Finish once at the end.
-inline constexpr UInt32 kCrc32Init = 0xFFFFFFFFU;
+// [AD 8.2] 변조 방지가 아니다
+// 알고리즘이 공개라 고친 쪽이 체크섬을 다시 계산하면 그대로 통과한다
+// 사는 이유는 길이 접두사가 프레임 경계와 어긋난 스트림을 잡는 것
+// 그것도 첫 프레임에서 잡는다. 변조 차단은 세션 키 HMAC
+[[nodiscard]] UInt32 Crc32Update( UInt32 state, std::span< const Byte > data ) noexcept;
 
-[[nodiscard]] UInt32 Crc32Update(UInt32 state, std::span<const Byte> data) noexcept;
-
-[[nodiscard]] UInt32 Crc32Finish(UInt32 state) noexcept;
+[[nodiscard]] UInt32 Crc32Finish( UInt32 state ) noexcept;
 
 }  // namespace atlas

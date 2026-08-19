@@ -5,5 +5,5 @@ add_library(atlas_config STATIC ini_document.cpp secret_config.cpp server_config
 # the server/ include root, so repeating them here would be a second copy of the §7.2 block that can
 # drift from the first. PUBLIC rather than PRIVATE because server_config.h exposes atlas::LogLevel
 # and atlas::UInt16 from core headers, so every consumer needs core's include path too.
-# 🔴 No new vcpkg dependency: the ini parser is hand-written (§15.2 keeps the manifest at 6).
+# No new vcpkg dependency: the ini parser is hand-written (§15.2 keeps the manifest at 6).
 target_link_libraries(atlas_config PUBLIC atlas_core)

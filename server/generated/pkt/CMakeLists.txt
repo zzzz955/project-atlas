@@ -1,10 +1,10 @@
 # Owned by the pkt_generator work item.
 #
-# 🔴 Every .h / .cpp / .cmake next to this file is generator output and is never hand-edited —
+# Every .h / .cpp / .cmake next to this file is generator output and is never hand-edited —
 #    change shared/contracts/**/*.cs and re-run `npm run gen:pkt`. This CMakeLists.txt and the
 #    tests/ directory are the only hand-written things here.
 #
-# 🔴 The source list itself is generated into pkt_sources.cmake instead of being spelled out or
+# The source list itself is generated into pkt_sources.cmake instead of being spelled out or
 #    file(GLOB)-ed: adding a contract then never means touching CMake, and a stale list can never
 #    silently drop a DTO from the build. include() registers it as a configure dependency, so
 #    regenerating re-runs CMake on its own.

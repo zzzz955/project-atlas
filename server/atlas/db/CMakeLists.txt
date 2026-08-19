@@ -16,7 +16,7 @@ add_library(atlas_db STATIC
 # (core/error.h), so every consumer needs the same include root and the same standard.
 target_link_libraries(atlas_db PUBLIC atlas_core)
 
-# 🔴 PRIVATE is the mechanical enforcement of "no header in this library includes <mysql.h>". The
+# PRIVATE is the mechanical enforcement of "no header in this library includes <mysql.h>". The
 # driver handles appear in the public headers only as forward-declared struct tags, and a PUBLIC link
 # would compile today while quietly permitting a MYSQL_BIND to leak into a public header tomorrow.
 # Same shape as spdlog behind core/log.h (§11.1).

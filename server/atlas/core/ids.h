@@ -1,35 +1,46 @@
 #pragma once
+
+// =============================================================================
+// [CS 4.3] 프레임워크 식별자 4종
+// alias 였다면 인자 뒤바뀜이 그대로 컴파일되고 런타임에 조용히 틀린다
+// enum class 는 컴파일 에러
+// =============================================================================
+
 #include <concepts>
 
 #include "atlas/core/types.h"
 
-namespace atlas {
+namespace atlas
+{
 
-// cpp-style.md §4.3 — strong-typed IDs. The cheapest rule with the biggest payoff.
-//
-// If every identifier is just a `UInt64` alias, `Foo(session_id, actor_id)` still compiles when the
-// two arguments are swapped and then goes silently wrong at runtime. `enum class` has no implicit
-// conversion, so the same mistake becomes a compile error — and it costs nothing at runtime.
-//
-// architecture-design.md §6 — the identity ladder is account -> server -> character. `server_id` is
-// deliberately NOT a strong type yet: it is not carried around as an argument anywhere, and a type
-// nobody passes by mistake buys nothing. Promote it when a call site actually needs the guard.
-enum class AccountId : UInt64 {};
-enum class CharacterId : UInt64 {};
-enum class SessionId : UInt64 {};
-enum class ActorId : UInt64 {};
+// [AD 6] 신원 사다리는 account -> server -> character
+// server_id 는 아직 강타입이 아니다
+// 인자로 넘기는 곳이 없어 막을 실수 자체가 없다
+enum class AccountId : UInt64
+{
+};
+enum class CharacterId : UInt64
+{
+};
+enum class SessionId : UInt64
+{
+};
+enum class ActorId : UInt64
+{
+};
 
-// The single explicit way back to the raw value. Keeping extraction to one named function means
-// `static_cast` never has to appear at call sites, so a stray cast in review is a real smell.
-// The concept restricts it to the four framework IDs (cpp-style.md §6 — constraints are concepts,
-// never SFINAE), so it cannot be used to launder an arbitrary enumeration.
-template <class T>
-concept StrongId = std::same_as<T, AccountId> || std::same_as<T, CharacterId> ||
-                   std::same_as<T, SessionId> || std::same_as<T, ActorId>;
+// 원시 값 추출의 유일한 통로
+// 호출부에서 static_cast 가 사라진다
+// 떠도는 캐스트가 리뷰에서 곧바로 냄새가 된다
+// [CS 6] 제약은 concept. 4종 외 임의 enum 의 세탁을 막는다
+template < class T >
+concept StrongId = std::same_as< T, AccountId > || std::same_as< T, CharacterId > ||
+                   std::same_as< T, SessionId > || std::same_as< T, ActorId >;
 
-template <StrongId Id>
-constexpr UInt64 IdValue(Id id) noexcept {
-    return static_cast<UInt64>(id);
+template < StrongId Id >
+constexpr UInt64 IdValue( Id id ) noexcept
+{
+    return static_cast< UInt64 >( id );
 }
 
 }  // namespace atlas

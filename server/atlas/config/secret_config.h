@@ -1,46 +1,40 @@
 #pragma once
+
+// =============================================================================
+// [AD 5.4] 설정 경계의 .env 쪽. 커밋되는 server.ini 에는 절대 안 들어감
+// 여기 값은 로그/예외 메시지/스트림 어디에도 나가지 않음
+// =============================================================================
+
 #include <string>
 
 #include "atlas/core/types.h"
 
-// architecture-design.md §5.4 — the `.env` half of the config boundary. 🔴 These keys never appear
-// in server.ini: server.ini is committed, and a credential that reaches the repository cannot be
-// taken back.
-//
-// 🔴 No value below is ever logged, formatted into an exception message, or streamed. The one
-// diagnostic surface this type offers is DescribePresence(), which prints key names and set/empty
-// and nothing else — that asymmetry is the whole point of the type.
+namespace atlas
+{
 
-namespace atlas {
-
-struct SecretConfig {
+struct SecretConfig
+{
     std::string db_host;
-    UInt16 db_port{0};
+    UInt16 db_port{ 0 };
     std::string db_name;
     std::string db_user;
     std::string db_password;
     std::string jwks_url;
 
-    // architecture-design.md §10.2 — the cache. 🔴 Host and credentials only; what Redis is
-    // allowed to be USED for is a design rule, not a setting, and there is deliberately no knob
-    // here that could turn the forbidden roles on. An empty host means "no cache configured", and
-    // the layer that wants one decides what to do about it — this one only transports.
+    // [AD 10.2] 접속 정보만 담는다
+    // Redis 를 무엇에 쓸지는 설계 규칙이지 설정이 아니다
+    // 금지된 용도를 켤 손잡이는 여기 없음. 빈 host = 캐시 미설정
     std::string redis_host;
-    UInt16 redis_port{0};
+    UInt16 redis_port{ 0 };
     std::string redis_password;
 
-    // `ATLAS_DB_TLS_NO_VERIFY` — not a secret, but it belongs to the same per-deployment axis as
-    // the DB host, and server.ini cannot carry it because that file is baked into the image (§5.4).
-    // 🔴 Defaults to false = verify. Only the literal string "1" turns it on, so a typo relaxes
-    // nothing. What it costs is written on DbConnectionConfig::tls_no_verify.
-    bool db_tls_no_verify{false};
+    // [AD 5.4] 비밀은 아니지만 배포마다 다른 축이라 server.ini 로는 못 담음
+    // 기본 false = 검증함. 문자열 "1" 만 켜므로 오타는 아무것도 완화 못 함
+    bool db_tls_no_verify{ false };
 
-    // Keys are read from the process environment (docker compose / `.env`). An unset key is an
-    // empty value rather than a failure: this layer only transports the secrets, and the layer that
-    // actually needs a DB connection is the one that gets to decide what is mandatory.
+    // 미설정 키는 실패가 아니라 빈 값. 필수 여부는 쓰는 계층이 판단
     [[nodiscard]] static SecretConfig FromEnvironment();
 
-    // Key names + "<set>"/"<empty>". 🔴 Never a value.
     [[nodiscard]] std::string DescribePresence() const;
 
     void LogSummary() const;

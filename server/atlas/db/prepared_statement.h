@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// [AD 10] 런타임에 SQL 을 조립하지 않음
+// 문장은 ? 자리표시자를 가진 고정 텍스트. 실행은 바인딩 파라미터로만
+// =============================================================================
+
 #include <cstddef>
 #include <span>
 #include <string>
@@ -8,55 +14,49 @@
 #include "atlas/core/types.h"
 #include "atlas/db/connection.h"
 
-// 🔴 architecture-design.md §10 — no SQL is assembled at run time. A statement is fixed text with
-// `?` placeholders, prepared once and executed with bound parameters forever after. The generated
-// headers (§10.1) emit exactly that text plus the binding order, and this class is what runs it.
-//
-// The driver's statement handle, named by its own C API struct tag for the reason connection.h
-// gives. <mysql.h> stays out of every header in this library.
-// NOLINTNEXTLINE(readability-identifier-naming) — libmariadb's tag, same reason as connection.h.
+// 드라이버의 문장 핸들. connection.h 가 밝힌 이유로 C API 태그를 그대로 씀
+// <mysql.h> 는 이 라이브러리의 어느 헤더에도 들어오지 않음
+// NOLINTNEXTLINE(readability-identifier-naming)
 struct st_mysql_stmt;
 
-namespace atlas {
+namespace atlas
+{
 
-// One prepared statement, owned by the Connection it was prepared on and cached there by SQL text.
-//
-// 🔴 Lifetime: a statement never outlives its connection. Connection's destructor tears the cache
-// down first for that reason.
-class PreparedStatement {
+// prepare 한 Connection 이 소유하고 SQL 텍스트로 캐시하는 문장 1개
+// 문장은 연결보다 오래 살지 않음. Connection 소멸자가 캐시를 먼저 허무는 이유
+class PreparedStatement
+{
 public:
-    // Prepares immediately; throws DbException when the server rejects the text. Constructed by
-    // Connection::Prepare, which is the only caller that has the driver handle.
-    PreparedStatement(st_mysql* connection, std::string sql);
+    // 즉시 prepare 하고 서버가 텍스트를 거부하면 DbException
+    // 드라이버 핸들을 쥔 유일한 호출자인 Connection::Prepare 만 생성
+    PreparedStatement( st_mysql* connection, std::string sql );
     ~PreparedStatement();
 
-    PreparedStatement(const PreparedStatement&) = delete;
-    PreparedStatement& operator=(const PreparedStatement&) = delete;
-    PreparedStatement(PreparedStatement&&) = delete;
-    PreparedStatement& operator=(PreparedStatement&&) = delete;
+    PreparedStatement( const PreparedStatement& ) = delete;
+    PreparedStatement& operator=( const PreparedStatement& ) = delete;
+    PreparedStatement( PreparedStatement&& ) = delete;
+    PreparedStatement& operator=( PreparedStatement&& ) = delete;
 
-    // Number of `?` placeholders the server reported. The generated headers static_assert the same
-    // number against their binding array, so a mismatch here means the statement was not the
-    // generated one.
+    // 서버가 보고한 ? 개수
+    // 생성된 헤더가 자신의 바인딩 배열과 같은 수인지 static_assert 함
+    // 여기서 어긋나면 그 문장은 생성된 것이 아님
     [[nodiscard]] std::size_t ParameterCount() const noexcept { return parameter_count_; }
     [[nodiscard]] std::string_view Sql() const noexcept { return sql_; }
 
-    // Runs a statement that returns no rows. Result: affected row count.
-    UInt64 Execute(std::span<const DbValue> parameters);
+    // 행을 반환하지 않는 문장. 결과는 영향받은 행 수
+    UInt64 Execute( std::span< const DbValue > parameters );
 
-    // Runs a statement that returns rows and materialises the whole result set.
-    //
-    // 🔴 Materialised on purpose: a streaming cursor would hold the connection past the end of the
-    // caller's frame, and the connection belongs to a pool lease. Phase-1 result sets are a handful
-    // of rows for one character, so the copy is not the cost that matters.
-    std::vector<DbRow> Query(std::span<const DbValue> parameters);
+    // 행을 반환하는 문장을 실행하고 결과 집합 전체를 물질화
+    // 스트리밍 커서면 호출자 프레임이 끝난 뒤에도 풀 대여분 연결을 붙듦
+    // Phase-1 결과 집합은 캐릭터 하나 분량이라 복사는 문제되는 비용이 아님
+    std::vector< DbRow > Query( std::span< const DbValue > parameters );
 
 private:
-    void BindAndExecute(std::span<const DbValue> parameters);
+    void BindAndExecute( std::span< const DbValue > parameters );
 
     std::string sql_;
-    st_mysql_stmt* stmt_{nullptr};
-    std::size_t parameter_count_{0};
+    st_mysql_stmt* stmt_{ nullptr };
+    std::size_t parameter_count_{ 0 };
 };
 
 }  // namespace atlas

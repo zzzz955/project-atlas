@@ -1,11 +1,11 @@
 # The demo game (architecture-design.md §14 — the "game (replaceable)" layer).
 #
-# 🔴 THIS DIRECTORY EXISTS BECAUSE THE CORE-PURITY GATE (§15.4) FORBIDS IT FROM BEING IN atlas/.
+# THIS DIRECTORY EXISTS BECAUSE THE CORE-PURITY GATE (§15.4) FORBIDS IT FROM BEING IN atlas/.
 # `item`, `inventory` and `equip` are on tools/core_purity/denylist.txt, so a game with an inventory
 # cannot be written into server/atlas/** — the build fails. Swapping the game means replacing this
 # directory plus the generator inputs; the framework targets below are linked, never edited.
 #
-# 🔴 The dependency edge points game -> core, and there is no edge back. No atlas_* target links
+# The dependency edge points game -> core, and there is no edge back. No atlas_* target links
 # atlas_demo, and none ever should: the moment one does, the framework knows about this game and
 # §14's replacement claim stops being true.
 
@@ -30,7 +30,7 @@ add_library(atlas_demo STATIC
 #   atlas_generated_info      the compiled-in static tables (shared/datas/item.csv) — §8.2 layer 3
 #                             has nothing to check a client's claim against without them
 #
-# 🔴 The key strings (`ranking:{server}:exp`, `character:{server}:{id}`) live on THIS side of the
+# The key strings (`ranking:{server}:exp`, `character:{server}:{id}`) live on THIS side of the
 # edge, and `ranking` is on tools/core_purity/denylist.txt so the gate keeps them here (§15.4).
 target_link_libraries(atlas_demo
     PUBLIC atlas_proto atlas_db atlas_redis atlas_config atlas_generated_db atlas_generated_pkt

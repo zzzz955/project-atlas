@@ -1,4 +1,11 @@
 #pragma once
+
+// =============================================================================
+// [AD 9] TCP 연결 1개 = Session 1개. strand 로 직렬화
+// 경계는 바이트 스트림
+// 프레임/프로토콜은 atlas/proto 가 밖에서 주입
+// =============================================================================
+
 #include <array>
 #include <cstddef>
 #include <deque>
@@ -15,104 +22,84 @@
 #include "atlas/core/types.h"
 #include "atlas/net/net_types.h"
 
-namespace atlas {
+namespace atlas
+{
 
-// architecture-design.md §9 — one TCP connection, serialised by its own strand.
-//
-// 🔴 THE BOUNDARY OF THIS CLASS IS BYTES. It reads a byte stream and writes a byte stream. Frame
-// headers, payload identifiers, ordering counters and integrity fields are the protocol layer (§8),
-// which now exists as `atlas/proto` — and this class still does not include one line of it. The
-// dependency edge points proto -> net; `AttachFrameReader` (proto/session_framing.h) installs a
-// reader through `SetBytesHandler` from the outside. What arrives at `BytesHandler` is whatever the
-// socket produced — it is not a message, and it is not guaranteed to be a whole anything.
-//
-// 🔴 Concurrency is the strand and nothing else (§9.1). Every member below is touched only from
-// handlers bound to `strand_`, which is why there is not a single lock in this class. Putting one
-// here would create a second concurrency model, and deadlocks live exactly at the crossing point.
-class Session : public std::enable_shared_from_this<Session> {
+// BytesHandler 에 오는 것은 소켓이 뱉은 그대로의 바이트
+// 메시지도 아니고 무언가 하나의 전체라는 보장도 없다
+// 의존 방향은 proto -> net 한쪽뿐. net 은 proto 를 모른다
+// [AD 9.1] 동시성은 strand 뿐. 락을 넣으면 교착이 그 교차점에 생긴다
+class Session : public std::enable_shared_from_this< Session >
+{
 public:
-    // The session hands itself to the callback so the owner can answer on the same connection
-    // without keeping its own map from raw pointer back to shared_ptr.
+    // 세션 자신을 콜백에 넘긴다
+    // 소유자가 raw 포인터 -> shared_ptr 맵 없이 같은 연결로 응답 가능
     using BytesHandler =
-        std::function<void(const std::shared_ptr<Session>&, std::span<const Byte>)>;
-    using CloseHandler = std::function<void(const std::shared_ptr<Session>&)>;
+        std::function< void( const std::shared_ptr< Session >&, std::span< const Byte > ) >;
+    using CloseHandler = std::function< void( const std::shared_ptr< Session >& ) >;
 
-    // architecture-design.md §9 — the back-pressure cap this class deliberately left open until a
-    // message had a definition. The frame layer (§8.1) gave it one, so the cap lands here as a
-    // plain byte count: the session still does not know what a message is, only how many bytes it
-    // is willing to hold for a peer that is not draining them.
-    //
-    // 🔴 Exceeding it CLOSES the connection. It does not drop the payload. A drop breaks the
-    // protocol silently and the symptom turns up days later in an unrelated place; a close is loud,
-    // immediate, and leaves the peer with a fact it can act on.
-    static constexpr std::size_t kMaxWriteQueueBytes = std::size_t{1024} * 1024;
+    // [AD 9] 백프레셔 상한. 세션은 메시지가 뭔지 여전히 모른다
+    // 빼가지 않는 피어를 위해 몇 바이트까지 들고 있을지만 안다
+    // 초과 시 폐기가 아니라 연결 종료
+    // 조용한 폐기는 며칠 뒤 딴 데서 터진다
+    static constexpr std::size_t kMaxWriteQueueBytes = std::size_t{ 1024 } * 1024;
 
-    // architecture-design.md §9.3 — the idle timeout. A peer that loses power or has its cable
-    // pulled sends no FIN, so TCP does not learn the connection is gone until the server writes to
-    // it; without a timer that session lives forever and its buffers leak. This is the only clock
-    // in this layer, and it counts silence on the READ side.
-    //
-    // 🔴 300s, and the number is a demo constraint, not a guess: `server/console_client` is
-    // interactive, so a human pauses for tens of seconds between commands. A 60s cap would cut the
-    // demo off mid-typing. `loadgen` is closed-loop and can never reach 300s of silence.
-    static constexpr Duration kDefaultIdleTimeout = Seconds{300};
+    // [AD 9.3] 전원이 끊긴 피어는 FIN 을 보내지 않는다
+    // 타이머가 없으면 그 세션과 버퍼는 영원히 남는다
+    // 이 계층의 유일한 시계로 READ 쪽 침묵을 센다
+    // 300s 는 데모 제약 - console_client 는 사람이 수십 초를 쉬어간다
+    static constexpr Duration kDefaultIdleTimeout = Seconds{ 300 };
 
-    // 🔴 cpp-style.md §4.4 — a session MUST be owned by a shared_ptr, because `shared_from_this()`
-    // inside every handler is what keeps it alive while an operation is in flight. The constructor
-    // is private so the stack-allocated mistake is a compile error rather than a comment.
-    //
-    // `idle_timeout` is a parameter rather than a hard-coded constant because testability is a
-    // design constraint here: a test cannot wait 300s, so it passes milliseconds.
-    static std::shared_ptr<Session> Create(IoContext& io_context, Socket socket, SessionId id,
-                                           Duration idle_timeout = kDefaultIdleTimeout);
+    // [CS 4.4] 세션은 반드시 shared_ptr 소유
+    // 핸들러마다의 shared_from_this() 가 진행 중 수명을 붙든다
+    // 생성자가 private 라 스택 할당은 컴파일 에러
+    // idle_timeout 이 인자인 이유는 테스트가 300s 를 못 기다리기 때문
+    static std::shared_ptr< Session > Create( IoContext& io_context, Socket socket, SessionId id,
+                                              Duration idle_timeout = kDefaultIdleTimeout );
 
-    Session(const Session&) = delete;
-    Session& operator=(const Session&) = delete;
-    Session(Session&&) = delete;
-    Session& operator=(Session&&) = delete;
+    Session( const Session& ) = delete;
+    Session& operator=( const Session& ) = delete;
+    Session( Session&& ) = delete;
+    Session& operator=( Session&& ) = delete;
     ~Session();
 
-    // 🔴 Install the callbacks BEFORE Start(): afterwards the members belong to the strand and a
-    // setter call from the owning thread would be a data race.
-    void SetBytesHandler(BytesHandler handler);
-    void SetCloseHandler(CloseHandler handler);
+    // 콜백은 Start() 전에 설치할 것
+    // 이후 멤버는 strand 소유라 밖에서의 setter 호출은 데이터 경쟁
+    void SetBytesHandler( BytesHandler handler );
+    void SetCloseHandler( CloseHandler handler );
 
-    // Begins the read loop. Safe to call from any thread — it posts to the strand.
-    void Start();
+    void Start();  // 읽기 루프 시작. strand 에 post 하므로 어느 스레드에서나 안전
 
-    // Queues `bytes` for transmission. Safe to call from any thread. The buffer is copied before
-    // the call returns, so the caller may hand over a temporary.
-    void Send(std::span<const Byte> bytes);
+    // 전송 큐에 적재. 어느 스레드에서나 안전
+    // 반환 전에 버퍼를 복사하므로 호출자는 임시 객체를 넘겨도 된다
+    void Send( std::span< const Byte > bytes );
 
-    // Closes the connection. Safe to call from any thread, and idempotent.
-    void Close();
+    void Close();  // 어느 스레드에서나 안전하고 멱등
 
     [[nodiscard]] SessionId Id() const noexcept { return id_; }
 
-    // The strand every handler for this connection runs on. The owner posts its own work here to
-    // inherit the same serialisation instead of adding a lock of its own.
+    // 이 연결의 모든 핸들러가 도는 strand
+    // 소유자가 자기 작업을 여기 post 하면 같은 직렬화를 락 없이 물려받는다
     [[nodiscard]] Strand& GetStrand() noexcept { return strand_; }
 
 private:
-    Session(IoContext& io_context, Socket socket, SessionId id, Duration idle_timeout);
+    Session( IoContext& io_context, Socket socket, SessionId id, Duration idle_timeout );
 
-    // Everything below runs on the strand.
+    // 아래는 전부 strand 위에서 실행
     void StartReadOnStrand();
-    void OnReadOnStrand(const ErrorCode& ec, std::size_t bytes_read);
-    // Arms — or re-arms — the idle timer. Called from Start() and from every completed read.
-    void ArmIdleTimerOnStrand();
-    void OnIdleTimeoutOnStrand(const ErrorCode& ec);
-    void EnqueueOnStrand(std::vector<Byte>&& payload);
+    void OnReadOnStrand( const ErrorCode& ec, std::size_t bytes_read );
+    void ArmIdleTimerOnStrand();  // Start() 와 매 읽기 완료마다 재무장
+    void OnIdleTimeoutOnStrand( const ErrorCode& ec );
+    void EnqueueOnStrand( std::vector< Byte >&& payload );
     void StartWriteOnStrand();
-    void OnWriteOnStrand(const ErrorCode& ec);
-    void CloseOnStrand(std::string_view reason);
+    void OnWriteOnStrand( const ErrorCode& ec );
+    void CloseOnStrand( std::string_view reason );
 
-    // The "close this connection safely" callback that core/error.h left as an injection point:
-    // when `Guarded` swallows a throw, this is what takes the connection down.
+    // core/error.h 가 주입점으로 남긴 "연결을 안전하게 닫기" 콜백
+    // Guarded 가 throw 를 삼켰을 때 연결을 내리는 것이 이것
     [[nodiscard]] FailureHandler MakeFailureHandler();
 
-    // One socket read at a time, into a fixed buffer. Sizing this is not a protocol decision — it
-    // is how much the kernel may hand over per completion.
+    // 소켓 읽기 1회분 버퍼. 프로토콜 결정이 아니라 커널이 완료당 넘길 양
     static constexpr std::size_t kReadBufferSize = 4096;
 
     Socket socket_;
@@ -120,24 +107,22 @@ private:
     SessionId id_;
     Ctx ctx_;
 
-    // 🔴 Touched only on `strand_`, like every other member — which is what keeps the lock count of
-    // this class at zero even after a timer joined it (§9.1).
+    // 다른 멤버와 같이 strand 위에서만 접근. 타이머가 붙은 뒤에도 락은 0개
     SteadyTimer idle_timer_;
     Duration idle_timeout_;
 
-    std::array<Byte, kReadBufferSize> read_buffer_{};
+    std::array< Byte, kReadBufferSize > read_buffer_{};
 
-    // Write policy (architecture-design.md §9): FIFO, exactly one `async_write` in flight, the next
-    // one started from the completion of the previous. The strand is what makes an unlocked
-    // container correct here, and it is also why the running total below can be a plain member.
-    std::deque<std::vector<Byte>> write_queue_;
-    // Sum of the sizes in `write_queue_`. Kept incrementally rather than recomputed: the cap is
-    // tested on every enqueue, and walking a deque per Send would make the check the cost.
-    std::size_t write_queue_bytes_{0};
+    // [AD 9] 쓰기 정책: FIFO. 진행 중 async_write 는 항상 1개
+    // 다음 것은 이전 완료에서 시작
+    // strand 덕에 무락 컨테이너와 평범한 누계 멤버가 성립
+    std::deque< std::vector< Byte > > write_queue_;
+    // write_queue_ 크기 합. 매 Send 마다 deque 를 훑으면 검사 자체가 비용이 됨
+    std::size_t write_queue_bytes_{ 0 };
 
     BytesHandler bytes_handler_;
     CloseHandler close_handler_;
-    bool closed_{false};
+    bool closed_{ false };
 };
 
 }  // namespace atlas

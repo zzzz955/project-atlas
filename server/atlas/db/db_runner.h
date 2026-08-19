@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// [AD 9] DB 스레드 풀. 스레드 모델의 blocking isolation 가지
+// I/O 스레드 -> 세션 strand -> DB 스레드 풀 -> 다시 그 strand
+// =============================================================================
+
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -14,135 +20,102 @@
 #include "atlas/db/connection.h"
 #include "atlas/db/connection_pool.h"
 
-namespace atlas {
+namespace atlas
+{
 
-// What became of a submitted job.
-//
-// 🔴 THREE ANSWERS, NOT A BOOL. `false` used to mean only "the runner is stopped"; overload is a
-// second, unrelated failure, and folding it into the same `false` would leave the caller unable to
-// tell a shutdown from a server under load — the two want opposite responses. This is the same
-// overlap `RedisResult::ok` carried until it was taken apart (architecture-design.md §10.6), and it
-// is cheaper to not create it than to remove it later.
-//
-// 🔴 This type is internal to atlas/db. It is NOT a wire contract, no generator produces it, and it
-// must never acquire a numeric meaning the client is told about — the game layer maps it onto the
-// refusal codes it already has.
-enum class SubmitResult : UInt8 {
-    // Queued. Exactly one of `work` then `completion` will run.
+// 제출한 작업의 결말. bool 이 아니라 답이 셋인 이유
+// 예전 false 는 "러너가 멈춤" 만 뜻했고 과부하는 무관한 두 번째 실패
+// 하나로 접으면 호출자가 종료와 부하를 구분 못 함. 둘의 대응은 정반대
+// [AD 10.6] RedisResult::ok 가 분해되기 전까지 지고 있던 것과 같은 겹침
+// atlas/db 내부용이라 클라이언트에게 알려지는 숫자 의미를 가져선 안 됨
+enum class SubmitResult : UInt8
+{
+    // 큐에 들어감. work 다음 completion 이 정확히 한 번씩 실행
     Accepted,
-    // The queue was at its cap. 🔴 NOTHING runs: not the work, not the completion. The caller
-    // already holds the outcome in this return value and answers on the spot, which is the only
-    // shape in which a refusal cannot be lost.
+    // 큐가 상한. work 도 completion 도 실행되지 않음
+    // 호출자가 이 반환값으로 결과를 이미 쥐고 그 자리에서 답함
+    // 거부가 유실될 수 없는 유일한 형태
     Rejected,
-    // Start() was never called, or Stop() already ran. Same "nothing runs" rule as Rejected.
+    // Start() 미호출이거나 Stop() 이 이미 돎. Rejected 와 같은 "아무것도 안 함"
     Stopped,
 };
 
-// architecture-design.md §9 — the DB thread pool, the "blocking isolation" branch of the thread
-// model diagram.
-//
-//     I/O threads (io_context)  ->  session strand  ->  DB thread pool  ->  back to that strand
-//
-// 🔴 These threads are NOT io_context workers and must never be. libmariadb's C API is synchronous:
-// a query blocks the thread that issued it. Running one on an I/O worker freezes every session that
-// worker was serving, and the symptom is a server that is half alive with no error anywhere.
-// Isolation is the entire reason this pool exists — sharing the io_context to save M threads gives
-// back the property the design was built around.
-//
-// 🔴 The ctx ledger crosses the boundary BY VALUE (§9.2). Submit takes a Ctx, not a reference: a
-// reference to the caller's CtxScope would dangle the moment that scope unwound on the I/O thread,
-// which is the concrete shape of the trap §9.2 warns about. The job re-installs the ledger on the
-// DB thread (via Guarded) and the completion re-installs it again wherever it lands.
-class DbRunner {
+// 이 스레드들은 io_context 워커가 아니며 절대 아니어야 함
+// libmariadb 의 C API 는 동기라 쿼리가 발행한 스레드를 막음
+// I/O 워커에서 돌리면 그 워커가 맡은 모든 세션이 얼어붙음
+// [AD 9.2] ctx 원장은 값으로 경계를 넘음
+// 호출자 CtxScope 로의 참조는 그 스코프가 풀리는 순간 매달림
+class DbRunner
+{
 public:
-    // Runs on a DB thread with the ctx ledger installed and a leased connection.
-    //
-    // 🔴 The Connection* is null when no connection could be leased within the acquire timeout. It
-    // is a non-owning observer that may be absent (cpp-style.md §4.4), and the job still runs so
-    // that the caller always gets exactly one outcome instead of silence.
-    //
-    // The Ctx& is the job's own copy, and it is the one the transaction scope writes tx_state into
-    // (see transaction.h). The completion receives it afterwards.
-    using Work = std::function<void(Ctx&, Connection*)>;
+    // ctx 원장이 심긴 DB 스레드에서 대여한 연결과 함께 실행
+    // [CS 4.4] Connection* 은 대여 실패 시 null - 없을 수 있는 비소유 관찰자
+    // 그래도 작업은 돌아 호출자가 침묵 대신 결말 하나를 받음
+    using Work = std::function< void( Ctx&, Connection* ) >;
 
-    // Runs after the job, on whatever executor the poster sends it to. May be empty.
-    using Completion = std::function<void(const Ctx&)>;
+    // 작업 뒤 poster 가 보낸 executor 위에서 실행. 비어 있어도 됨
+    using Completion = std::function< void( const Ctx& ) >;
 
-    // How to get back to the caller's executor — typically
-    // `[strand](std::function<void()> fn) { asio::post(strand, std::move(fn)); }`.
-    //
-    // 🔴 Type-erased rather than a template parameter so that atlas/db carries no asio dependency
-    // at all (cpp-style.md §6 — take the type erasure when the runtime cost is one indirect call
-    // and the compile-time cost would be a whole instantiation per executor). Empty means "run the
-    // completion inline on the DB thread".
-    using CompletionPoster = std::function<void(std::function<void()>)>;
+    // 호출자 executor 로 돌아가는 방법. 보통 strand 에 asio::post 하는 람다
+    // [CS 6] 타입 소거인 이유 - atlas/db 가 asio 의존을 전혀 지지 않게 하려고
+    // 비면 completion 을 DB 스레드에서 인라인 실행
+    using CompletionPoster = std::function< void( std::function< void() > ) >;
 
-    // How many jobs may WAIT per DB thread before Submit starts refusing.
-    //
-    // 🔴 The question this number answers is not "how much may pile up" but "can what piled up be
-    // drained before the client stops caring". Memory is not the constraint — a few hundred jobs is
-    // nothing. Latency is: a queued job is pure waiting that happens BEFORE the request starts, and
-    // it stacks on top of the pool acquire wait and the commit fsync that follow it.
-    //
-    // The settled regime of architecture-design.md §16.1d is ~130 req/s at `db_threads = 2`, so one
-    // DB thread drains ~65 jobs/s. 64 per thread is therefore about ONE SECOND of drain. A job that
-    // has not even started a second after it arrived will answer a client that has already decided
-    // the server is broken, and committing it spends the scarcest resource in the process — a DB
-    // thread — on work nobody is waiting for any more.
-    //
-    // 🔴 Per THREAD rather than a flat total, because §16.1d's ceiling is itself proportional to
-    // `db_threads` (`db_threads / (fsyncs per commit x fsync latency)`). A flat cap would silently
-    // become a different number of seconds the moment that value is raised.
+    // DB 스레드 1개당 대기 가능한 작업 수. 넘으면 Submit 이 거부하기 시작
+    // 제약은 메모리가 아니라 지연. 쌓인 것을 포기 전에 빼낼 수 있어야 함
+    // [AD 16.1d] 정착 구간이 db_threads = 2 에서 약 130 req/s
+    // 스레드 하나가 초당 약 65개를 빼내므로 스레드당 64 는 약 1초치 배수량
+    // 총량이 아니라 스레드당인 이유 - 천장 자체가 db_threads 에 비례
     static constexpr std::size_t kMaxQueuedJobsPerThread = 64;
 
-    // `thread_count == 0` falls back to 1. Fixed at construction — the pool never resizes.
-    DbRunner(ConnectionPool& pool, std::size_t thread_count, Duration acquire_timeout);
+    // thread_count == 0 이면 1로 대체. 생성 시 고정 - 풀은 리사이즈하지 않음
+    DbRunner( ConnectionPool& pool, std::size_t thread_count, Duration acquire_timeout );
 
     ~DbRunner();
 
-    DbRunner(const DbRunner&) = delete;
-    DbRunner& operator=(const DbRunner&) = delete;
-    DbRunner(DbRunner&&) = delete;
-    DbRunner& operator=(DbRunner&&) = delete;
+    DbRunner( const DbRunner& ) = delete;
+    DbRunner& operator=( const DbRunner& ) = delete;
+    DbRunner( DbRunner&& ) = delete;
+    DbRunner& operator=( DbRunner&& ) = delete;
 
     void Start();
 
-    // Stops accepting new jobs, drains the ones already queued, then joins. Idempotent.
-    // 🔴 Never call from a DB thread — it would join itself.
+    // 새 작업 접수를 멈추고 이미 큐에 있는 것을 빼낸 뒤 join. 멱등
+    // DB 스레드에서 부르지 말 것 - 자기 자신을 join 하게 됨
     void Stop() noexcept;
 
     [[nodiscard]] std::size_t ThreadCount() const noexcept { return thread_count_; }
     [[nodiscard]] std::size_t QueueCapacity() const noexcept { return queue_capacity_; }
     [[nodiscard]] std::size_t PendingCount() const;
 
-    // ── Server-side counters (architecture-design.md §16.1) ──────────────────────────────────
-    // 🔴 Cumulative and monotonic, read with no lock, and NOT logged from here: the caller samples
-    // them on an interval of its own. A counter that logged itself per event would be the next
-    // bottleneck under exactly the load it exists to describe (§16.1g).
-    //
-    // The two acquire counters are taken at this call site rather than inside ConnectionPool, and
-    // that is exact rather than convenient: §16.1e establishes that DB threads are the pool's only
-    // lessees, so every lease in the process passes through the line below.
-    [[nodiscard]] UInt64 RejectedCount() const noexcept {
-        return rejected_count_.load(std::memory_order_relaxed);
+    // [AD 16.1] 서버측 카운터. 누적 단조이고 락 없이 읽음
+    // 여기서 로그를 남기지 않음 - 표본 주기는 호출자 몫
+    // [AD 16.1g] 이벤트마다 로그하는 카운터는 그 부하에서 다음 병목이 됨
+    // [AD 16.1e] acquire 카운터 둘을 풀 안이 아니라 호출 지점에서 셈
+    // DB 스레드가 풀의 유일한 임차인이라 모든 대여가 아래 줄을 지남
+    [[nodiscard]] UInt64 RejectedCount() const noexcept
+    {
+        return rejected_count_.load( std::memory_order_relaxed );
     }
-    [[nodiscard]] UInt64 AcquireFailureCount() const noexcept {
-        return acquire_failure_count_.load(std::memory_order_relaxed);
+    [[nodiscard]] UInt64 AcquireFailureCount() const noexcept
+    {
+        return acquire_failure_count_.load( std::memory_order_relaxed );
     }
-    [[nodiscard]] UInt64 AcquireWaitMicros() const noexcept {
-        return acquire_wait_micros_.load(std::memory_order_relaxed);
+    [[nodiscard]] UInt64 AcquireWaitMicros() const noexcept
+    {
+        return acquire_wait_micros_.load( std::memory_order_relaxed );
     }
 
-    // Queues a job — see SubmitResult for what each answer means and what does NOT run.
-    //
-    // 🔴 Both refusals are EXPECTED failures, so neither throws (architecture-design.md §11.2a):
-    // a stopped runner is shutdown and a full queue is load, and neither is a defect. [[nodiscard]]
-    // because dropping the answer is how a refusal turns into a client that waits forever.
-    [[nodiscard]] SubmitResult Submit(Ctx ctx, Work work, Completion completion = {},
-                                      CompletionPoster poster = {});
+    // 작업을 큐에 넣음. 각 답의 뜻은 SubmitResult
+    // [AD 11.2a] 두 거부 모두 예상된 실패라 던지지 않음
+    // 멈춘 러너는 종료이고 꽉 찬 큐는 부하이며 어느 쪽도 결함이 아님
+    // 답을 버리면 거부가 영원히 기다리는 클라이언트가 되므로 [[nodiscard]]
+    [[nodiscard]] SubmitResult Submit( Ctx ctx, Work work, Completion completion = {},
+                                       CompletionPoster poster = {} );
 
 private:
-    struct Job {
+    struct Job
+    {
         Ctx ctx{};
         Work work{};
         Completion completion{};
@@ -150,28 +123,26 @@ private:
     };
 
     void WorkerLoop();
-    void RunJob(Job job) noexcept;
+    void RunJob( Job job ) noexcept;
 
     ConnectionPool* pool_;
     std::size_t thread_count_;
     std::size_t queue_capacity_;
     Duration acquire_timeout_;
-    std::vector<std::thread> threads_;
-    // 🔴 architecture-design.md §9.1 — the same justification the connection pool gives: a job
-    // queue shared by N threads is a genuinely shared resource, not strand-serialised session
-    // state.
+    std::vector< std::thread > threads_;
+    // [AD 9.1] 연결 풀과 같은 근거
+    // N 개 스레드가 공유하는 작업 큐는 세션 상태가 아니라 진짜 공유 자원
     mutable std::mutex mutex_;
     std::condition_variable pending_;
-    std::deque<Job> queue_;
-    bool running_{false};
+    std::deque< Job > queue_;
+    bool running_{ false };
 
-    // 🔴 std::atomic rather than a fourth lock. These are read from a thread that holds nothing and
-    // written from threads that hold the queue mutex or nothing at all; a mutex here would add a
-    // synchronisation object whose only job is counting, and §9.1's "locks live on genuinely shared
-    // resources" is a budget, not a formality.
-    std::atomic<UInt64> rejected_count_{0};
-    std::atomic<UInt64> acquire_failure_count_{0};
-    std::atomic<UInt64> acquire_wait_micros_{0};
+    // 네 번째 락이 아니라 std::atomic
+    // 여기 뮤텍스를 두면 세는 일만 하는 동기화 객체가 하나 늚
+    // [AD 9.1] 의 락 예산은 형식이 아님
+    std::atomic< UInt64 > rejected_count_{ 0 };
+    std::atomic< UInt64 > acquire_failure_count_{ 0 };
+    std::atomic< UInt64 > acquire_wait_micros_{ 0 };
 };
 
 }  // namespace atlas

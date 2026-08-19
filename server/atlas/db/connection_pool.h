@@ -1,4 +1,10 @@
 #pragma once
+
+// =============================================================================
+// 고정 크기 드라이버 연결 풀과 그 RAII 대여 핸들
+// 풀 자체가 이 계층에서 락이 옳은 유일한 자리
+// =============================================================================
+
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
@@ -10,102 +16,76 @@
 #include "atlas/core/time.h"
 #include "atlas/db/connection.h"
 
-namespace atlas {
+namespace atlas
+{
 
 class ConnectionPool;
 
-// RAII lease. The connection goes back to the pool when this object dies, on every path including
-// an exception unwinding through the frame that held it.
-class PooledConnection {
+// RAII 대여. 이 객체가 죽으면 연결이 풀로 돌아감
+// 예외가 보유 프레임을 훑고 지나가는 경로에서도 마찬가지
+class PooledConnection
+{
 public:
     ~PooledConnection();
 
-    PooledConnection(const PooledConnection&) = delete;
-    PooledConnection& operator=(const PooledConnection&) = delete;
-    // Movable so that Acquire can return one out of an std::optional. A moved-from lease owns
-    // nothing and returns nothing.
-    PooledConnection(PooledConnection&& other) noexcept;
-    PooledConnection& operator=(PooledConnection&& other) noexcept;
+    PooledConnection( const PooledConnection& ) = delete;
+    PooledConnection& operator=( const PooledConnection& ) = delete;
+    // Acquire 가 optional 에 담아 반환하려면 이동 가능해야 함
+    // 이동된 대여는 아무것도 소유하지 않고 아무것도 반환하지 않음
+    PooledConnection( PooledConnection&& other ) noexcept;
+    PooledConnection& operator=( PooledConnection&& other ) noexcept;
 
     [[nodiscard]] Connection& operator*() const noexcept { return *connection_; }
     [[nodiscard]] Connection* operator->() const noexcept { return connection_; }
 
 private:
     friend class ConnectionPool;
-    PooledConnection(ConnectionPool& pool, Connection& connection) noexcept;
+    PooledConnection( ConnectionPool& pool, Connection& connection ) noexcept;
 
     void Return() noexcept;
 
-    // Non-owning observers, both of them (cpp-style.md §4.4): the pool owns the connections and
-    // outlives every lease it hands out.
-    ConnectionPool* pool_{nullptr};
-    Connection* connection_{nullptr};
+    // [CS 4.4] 둘 다 비소유 관찰자
+    // 풀이 연결을 소유하고 자신이 내준 모든 대여보다 오래 삼
+    ConnectionPool* pool_{ nullptr };
+    Connection* connection_{ nullptr };
 };
 
-// Fixed-size pool of driver connections.
-//
-// 🔴 Fixed size, full stop. No dynamic resizing, no autoscaling, no reconnect backoff, no health
-// check thread, no circuit breaker and no read/write split. Every one of those is how a connection
-// pool turns into a project of its own; the Phase-1 shape is a fixed pool plus a clear failure when
-// it is empty.
-//
-// 🔴 Exactly ONE of those cuts came back, and only this far: a connection is checked when it is
-// leased and reconnected at most once (Connection::EnsureAlive). What stays cut is everything in
-// the list above — no backoff, no retry loop, no background health check. The retry is simply the
-// next lease.
-//
-// It came back because the cut version was not "simple", it was broken: one MySQL restart, or
-// wait_timeout expiring on an idle pool, killed every socket in here and then EVERY request failed
-// forever while the process still reported healthy. A fixed pool that never recovers is not a
-// smaller feature, it is a permanent outage waiting for a deploy.
-//
-// 🔴 architecture-design.md §9.1 — this is the ONE place in the layer where a lock is correct.
-// The single-model rule is "concurrency is strands, and session state needs no lock because a
-// strand serialises it". A connection pool is not session state: it is a genuinely shared resource
-// that N unrelated DB threads contend for, which is exactly the exception §9.1 names alongside the
-// global config cache. This mutex therefore does NOT contradict the lock-free session layer — it is
-// on the other side of the line §9.1 draws. Without this comment the next reader reasonably reads
-// it as a violation.
-//
-// 🔴 And it is a mutex rather than a counting semaphore even though §9.1 lists "pool size limiting"
-// as a semaphore's legitimate use. A semaphore would give the count and nothing else, so the free
-// list underneath would still need a mutex — two synchronisation objects where one does the job,
-// and "take a permit, then pop the list" is not atomic across them. A semaphore earns its place
-// when the thing being limited needs no shared structure; here it does.
-class ConnectionPool {
+// 고정 크기. 리사이즈 - 오토스케일 - 헬스체크 - 서킷 브레이커 전부 없음
+// Phase-1 형태는 고정 풀 + 고갈 시 명확한 실패
+// 잘라낸 것 중 돌아온 것은 대여 시 최대 1회 재접속뿐(Connection::EnsureAlive)
+// [AD 9.1] 이 계층에서 락이 옳은 유일한 자리. 풀은 진짜 공유 자원
+// 세마포어면 free 리스트용 뮤텍스가 또 필요해 "허가 후 pop" 이 원자적이지 않음
+class ConnectionPool
+{
 public:
-    // Opens all `size` connections eagerly. Throws DbException if any of them fails, so a bad
-    // credential is a start-up failure rather than a surprise on the first request.
-    ConnectionPool(const DbConnectionConfig& config, std::size_t size);
+    // size 개를 모두 즉시 개통. 하나라도 실패하면 DbException
+    // 잘못된 자격 증명이 첫 요청 때의 놀람이 아니라 기동 실패가 되게 함
+    ConnectionPool( const DbConnectionConfig& config, std::size_t size );
     ~ConnectionPool();
 
-    ConnectionPool(const ConnectionPool&) = delete;
-    ConnectionPool& operator=(const ConnectionPool&) = delete;
-    ConnectionPool(ConnectionPool&&) = delete;
-    ConnectionPool& operator=(ConnectionPool&&) = delete;
+    ConnectionPool( const ConnectionPool& ) = delete;
+    ConnectionPool& operator=( const ConnectionPool& ) = delete;
+    ConnectionPool( ConnectionPool&& ) = delete;
+    ConnectionPool& operator=( ConnectionPool&& ) = delete;
 
     [[nodiscard]] std::size_t Size() const noexcept { return connections_.size(); }
     [[nodiscard]] std::size_t Available() const;
 
-    // 🔴 NEVER waits forever. An exhausted pool with an unbounded wait turns one slow query into a
-    // stalled server that looks like a hang rather than a fault, and the DB thread pool has a fixed
-    // thread count so every waiter is a thread that stopped serving. std::nullopt on timeout is a
-    // failure the caller can report; a hang is not.
-    //
-    // Expected failure, so nullopt rather than a throw (architecture-design.md §11.2a). Two
-    // failures share that one return now: the pool had nothing free within the timeout, or the
-    // connection it did have is dead and could not be re-established. Both are "no connection for
-    // you right now", and the caller's answer to them is the same.
-    [[nodiscard]] std::optional<PooledConnection> Acquire(Duration timeout);
+    // 무한 대기 안 함. 고갈된 풀에서 무한히 기다리면 장애가 멈춤처럼 보임
+    // DB 스레드 수가 고정이라 대기자 하나가 곧 일을 그만둔 스레드 하나
+    // [AD 11.2a] 예상된 실패라 throw 대신 nullopt
+    // 타임아웃 안에 빈 연결이 없었거나, 있던 연결이 죽고 재개통도 실패한 경우
+    // 호출자 입장에서 답은 어느 쪽이든 같음
+    [[nodiscard]] std::optional< PooledConnection > Acquire( Duration timeout );
 
 private:
     friend class PooledConnection;
-    void Release(Connection& connection) noexcept;
+    void Release( Connection& connection ) noexcept;
 
-    std::vector<std::unique_ptr<Connection>> connections_;
+    std::vector< std::unique_ptr< Connection > > connections_;
     mutable std::mutex mutex_;
     std::condition_variable available_;
-    std::deque<Connection*> free_;
+    std::deque< Connection* > free_;
 };
 
 }  // namespace atlas

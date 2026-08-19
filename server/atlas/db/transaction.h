@@ -1,99 +1,85 @@
 #pragma once
+
+// =============================================================================
+// [AD 10] 커밋 없이 풀리는 스코프는 롤백되는 RAII 트랜잭션과,
+// 커밋 이후를 되돌리는 보상 스코프
+// =============================================================================
+
 #include <functional>
 
 #include "atlas/core/ctx.h"
 #include "atlas/db/connection.h"
 
-namespace atlas {
+namespace atlas
+{
 
-// architecture-design.md §10 — the transaction scope is RAII: a scope that unwinds without a commit
-// rolls back. 🔴 §10 also says the RAII scope and the exception guard are one set — atomicity only
-// holds if a throw inside a Guarded handler unwinds this destructor.
-//
-// 🔴 The ctx reference is the CALLER'S ledger, deliberately not the thread_local one that CtxScope
-// installed. Guarded installs a COPY on entry and restores the previous value on exit (§9.2), so
-// anything this scope wrote into the thread_local would be gone by the time the guard returned —
-// and "was a transaction open when the guard swallowed that exception?" is precisely the question
-// tx_state exists to answer AFTER the guard has returned. Writing through the caller's own Ctx is
-// what makes the answer survive. The two are the same values; only the lifetime differs.
-class Transaction {
+// [AD 10] RAII 스코프와 예외 가드는 한 세트
+// Guarded 핸들러 안의 throw 가 이 소멸자를 풀고 지나가야만 원자성이 성립
+// [AD 9.2] ctx 참조는 thread_local 이 아니라 호출자의 원장
+// Guarded 는 진입 시 사본을 심고 이탈 시 이전 값을 되돌림
+// 트랜잭션이 열려 있었는지는 가드가 반환한 뒤에 물어야 답이 나옴
+class Transaction
+{
 public:
-    // Opens the transaction immediately and sets ctx.tx_state to Active. Throws DbException if the
-    // server refuses to start one.
-    Transaction(Connection& connection, Ctx& ctx);
+    // 즉시 트랜잭션을 열고 ctx.tx_state 를 Active 로. 서버가 거부하면 DbException
+    Transaction( Connection& connection, Ctx& ctx );
 
-    // Rolls back and sets ctx.tx_state to RolledBack unless Commit() already ran.
+    // Commit() 이 이미 돌지 않았다면 롤백하고 ctx.tx_state 를 RolledBack 으로
     ~Transaction();
 
-    Transaction(const Transaction&) = delete;
-    Transaction& operator=(const Transaction&) = delete;
-    Transaction(Transaction&&) = delete;
-    Transaction& operator=(Transaction&&) = delete;
+    Transaction( const Transaction& ) = delete;
+    Transaction& operator=( const Transaction& ) = delete;
+    Transaction( Transaction&& ) = delete;
+    Transaction& operator=( Transaction&& ) = delete;
 
-    // Commits and sets ctx.tx_state to Committed. Throws DbException on failure, in which case the
-    // destructor no longer rolls back — the server already ended the transaction.
+    // 커밋하고 ctx.tx_state 를 Committed 로. 실패 시 DbException
+    // 이때 소멸자는 더 이상 롤백하지 않음 - 서버가 이미 트랜잭션을 끝냄
     void Commit();
 
     [[nodiscard]] bool IsOpen() const noexcept { return open_; }
 
 private:
-    // Non-owning observers: both outlive this scope by construction (cpp-style.md §4.4).
+    // [CS 4.4] 비소유 관찰자. 둘 다 구조상 이 스코프보다 오래 삼
     Connection* connection_;
     Ctx* ctx_;
-    bool open_{false};
+    bool open_{ false };
 };
 
-// architecture-design.md §10.4 — compensation. The mirror of Transaction, one step later in time.
-//
-// 🔴 ROLLBACK AND COMPENSATION ARE NOT TWO NAMES FOR THE SAME THING, AND THE LINE BETWEEN THEM IS
-// THE COMMIT. Before the commit, ~Transaction undoes the work and the database never admitted it
-// happened. After the commit there is nothing left to roll back: the only way back is a NEW
-// committed transaction performing the inverse write, and every reader that saw the intermediate
-// state has already seen it. 🔴 Past that line, compensation is the only answer — this scope exists
-// so the distinction is structural instead of remembered.
-//
-//     Transaction tx(connection, ctx);
-//     ... writes ...
-//     tx.Commit();
-//     PostCommitGuard undo(ctx, [&] { ...inverse write, in its own transaction... });
-//     PublishTheSideEffect();   // throws -> the guard unwinds -> the inverse write runs
-//     undo.Release();
-//
-// 🔴 What compensation cannot give back is the window. Between the commit and the inverse write the
-// committed state is visible to everyone, so a compensated request is not an atomic non-event — it
-// is two facts in the log. Saying otherwise would be claiming a distributed transaction, which this
-// is not.
-class PostCommitGuard {
+// [AD 10.4] 보상. Transaction 의 거울상이되 시간상 한 걸음 뒤
+// 롤백과 보상을 가르는 선은 커밋
+// 커밋 전에는 ~Transaction 이 되돌리고 DB 는 인정한 적조차 없음
+// 커밋 뒤에는 되돌릴 것이 없고 유일한 길은 역방향 쓰기를 담은 새 커밋
+// 그 사이의 창은 모두에게 보임. 보상된 요청은 로그에 남은 두 개의 사실
+class PostCommitGuard
+{
 public:
-    // The inverse write. 🔴 Keep it the simplest statement that undoes the commit: it may have to
-    // run while an exception is already in flight, and see the destructor note below for what
-    // happens when it fails.
-    using Compensation = std::function<void()>;
+    // 역방향 쓰기. 커밋을 되돌리는 가장 단순한 한 문장으로 유지할 것
+    // 예외가 이미 날아가는 중에 실행될 수 있음
+    // 실패 시의 결과는 아래 소멸자
+    using Compensation = std::function< void() >;
 
-    explicit PostCommitGuard(Compensation compensation);
+    explicit PostCommitGuard( Compensation compensation );
 
-    // Runs the compensation unless Release() ran first.
-    //
-    // 🔴 A throwing compensation is caught and logged, because a destructor that throws during an
-    // unwind terminates the process. The consequence is stated rather than softened: at that point
-    // the committed state really is inconsistent and that log line is the only record of it. That
-    // is the reason the compensation must be one inverse write and not a workflow — the more it
-    // can do, the more ways it has to fail here, where nothing can be done about it.
+    // Release() 가 먼저 돌지 않았다면 보상을 실행
+    // 던지는 보상은 잡아서 로그로만 남김
+    // 스택 풀림 중 소멸자가 던지면 프로세스가 죽음
+    // 그 시점의 커밋 상태는 실제로 불일치이고 그 로그 한 줄이 유일한 기록
+    // 보상이 워크플로가 아니라 역방향 쓰기 하나여야 하는 이유
     ~PostCommitGuard();
 
-    PostCommitGuard(const PostCommitGuard&) = delete;
-    PostCommitGuard& operator=(const PostCommitGuard&) = delete;
-    PostCommitGuard(PostCommitGuard&&) = delete;
-    PostCommitGuard& operator=(PostCommitGuard&&) = delete;
+    PostCommitGuard( const PostCommitGuard& ) = delete;
+    PostCommitGuard& operator=( const PostCommitGuard& ) = delete;
+    PostCommitGuard( PostCommitGuard&& ) = delete;
+    PostCommitGuard& operator=( PostCommitGuard&& ) = delete;
 
-    // The post-commit step succeeded; there is nothing to undo.
+    // 커밋 이후 단계가 성공. 되돌릴 것이 없음
     void Release() noexcept { armed_ = false; }
 
     [[nodiscard]] bool IsArmed() const noexcept { return armed_; }
 
 private:
     Compensation compensation_;
-    bool armed_{true};
+    bool armed_{ true };
 };
 
 }  // namespace atlas
